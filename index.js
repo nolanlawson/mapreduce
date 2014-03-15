@@ -4,12 +4,13 @@ var pouchCollate = require('pouchdb-collate');
 var Promise = typeof global.Promise === 'function' ? global.Promise : require('lie');
 var collate = pouchCollate.collate;
 var toIndexableString = pouchCollate.toIndexableString;
+var normalizeKey = pouchCollate.normalizeKey;
 var evalFunc = require('./evalfunc');
 var log = (typeof console !== 'undefined') ?
   Function.prototype.bind.call(console.log, console) : function () {};
 var processKey = function (key) {
   // Stringify keys since we want them as map keys (see #35)
-  return JSON.stringify(pouchCollate.normalizeKey(key));
+  return JSON.stringify(normalizeKey(key));
 };
 
 // similar to java's hashCode function, converted to a hex string, adapted from:
@@ -396,6 +397,19 @@ function httpQuery(db, fun, opts) {
   }, callback);
 }
 
+function updateIndexSeq(index, seq, cb) {
+  var seqKey = toIndexableString([0, 'seq']);
+  var keyValues = {};
+  keyValues[seqKey] = seq;
+  index.dbIndex.put('_local/seq', keyValues, function (err) {
+    if (err) {
+      return cb(err);
+    }
+    index.seq = seq;
+    cb(null);
+  });
+}
+
 function getIndex(db, mapFun, reduceFun, cb) {
   var index = new Index(db, mapFun, reduceFun);
   var seqKey = toIndexableString([0, 'seq']);
@@ -403,31 +417,25 @@ function getIndex(db, mapFun, reduceFun, cb) {
     if (err) {
       return cb(err);
     }
-    if (res.length) {
-      index.seq = res[0].value;
-      cb(null, index);
-    } else {
-      index.seq = 0;
-      index.dbIndex.put('_local/seq', {seqKey : 0}, function (err) {
-        if (err) {
-          return cb(err);
-        }
-        cb(null, index);
-      });
-    }
+    index.seq = res[0] ? res[0].value : 0;
+    cb(null, index);
   });
 }
 
-function updateIndex(index) {
+function updateIndex(index, cb) {
 
-  function callMapFun(doc) {
+  function callMapFun(doc, cb) {
 
-    var keyValues = {};
+    var indexableKeysToKeyValues = {};
 
     var i = 0;
     var emit = function (key, value) {
-      var indexableStringKey = toIndexableString([key, doc.doc._id, value, i++]);
-      keyValues[indexableStringKey] = value;
+      var indexableStringKey = toIndexableString([1, key, doc.doc._id, value, i++]);
+      indexableKeysToKeyValues[indexableStringKey] = {
+        id  : doc.doc._id,
+        key : normalizeKey(key),
+        value : normalizeKey(value)
+      };
     };
 
     var mapFun = evalFunc(index.mapFun.toString(), emit, sum, log, Array.isArray, JSON.parse);
@@ -443,29 +451,106 @@ function updateIndex(index) {
 
     mapFun.call(null, doc.doc);
 
-    if (reduceFun) {
-      Object.keys(keyValues).forEach(function (key) {
-        var value = keyValues[key];
-        var reduceOutput = reduceFun.call()
-      });
-    }
+    var keyValues = Object.keys(indexableKeysToKeyValues).map(function (indexableKey) {
+      var keyValue = indexableKeysToKeyValues[indexableKey];
+      if (reduceFun) {
+        keyValue.reduceOutput =  reduceFun.call([keyValue.key], [keyValue.value], false);
+      }
+      return keyValue;
+    });
 
-    index.dbIndex.put(doc.doc._id, keyValues);
+    index.dbIndex.put(doc.doc._id, keyValues, function (err) {
+      if (err) {
+        return cb(err);
+      }
+      cb(null);
+    });
   }
 
+  function removeMappings(docId, cb) {
+    index.dbIndex.put(docId, {}, function (err) {
+      if (err) {
+        return cb(err);
+      }
+      cb(null);
+    });
+  }
+
+  var lastSeq = index.seq;
+  var gotError;
   index.db.changes({
     conflicts: true,
     include_docs: true,
     since : index.seq,
     onChange: function (doc) {
-      if (!('deleted' in doc) && doc.id[0] !== "_") {
-        callMapFun(doc);
+      if (gotError) {
+        return;
+      }
+      if (doc.id[0] === '_') {
+        return;
+      }
+      var myCB = function (err) {
+        if (err) {
+          gotError = err;
+        } else {
+          lastSeq = Math.max(lastSeq, doc.seq);
+        }
+      };
+      if ('deleted' in doc) {
+        removeMappings(doc.id, myCB);
+      } else {
+        callMapFun(doc, myCB);
       }
     },
     complete: function () {
-      completed = true;
-      checkComplete();
+      if (gotError) {
+        return cb(gotError);
+      }
+      updateIndexSeq(index, lastSeq, function (err) {
+        if (err) {
+          return cb(err);
+        }
+        cb(null);
+      });
     }
+  });
+}
+
+function queryIndex(index, opts) {
+
+  var indexOpts = {};
+  if ('startkey' in opts) {
+    indexOpts.startkey = toIndexableString([1, opts.startkey]);
+  }
+  if ('endkey' in opts) {
+    indexOpts.endkey = toIndexableString([1, opts.endkey]);
+  }
+  if ('key' in opts) {
+    indexOpts.startkey = indexOpts.endkey = toIndexableString([1, opts.key]);
+  }
+  if ('descending' in opts) {
+    indexOpts.descending = opts.descending;
+  }
+  if ('limit' in opts) {
+    indexOpts.limit = opts.limit;
+  }
+  // TODO: keys
+  indexOpts.skip = opts.skip || 0;
+
+  index.dbIndex.count(function (err, totalRows) {
+    if (err) {
+      return opts.complete(err);
+    }
+    index.dbIndex.get(indexOpts, function (err, results) {
+      if (err) {
+        return opts.complete(err);
+      }
+      opts.complete(null, {
+        total_rows : totalRows,
+        offset : indexOpts.skip,
+        rows : results
+      });
+    });
   });
 }
 
