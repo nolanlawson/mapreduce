@@ -3,6 +3,7 @@
 var pouchCollate = require('pouchdb-collate');
 var Promise = typeof global.Promise === 'function' ? global.Promise : require('lie');
 var collate = pouchCollate.collate;
+var toIndexableString = pouchCollate.toIndexableString;
 var evalFunc = require('./evalfunc');
 var log = (typeof console !== 'undefined') ?
   Function.prototype.bind.call(console.log, console) : function () {};
@@ -10,6 +11,18 @@ var processKey = function (key) {
   // Stringify keys since we want them as map keys (see #35)
   return JSON.stringify(pouchCollate.normalizeKey(key));
 };
+
+// similar to java's hashCode function, converted to a hex string, adapted from:
+// http://werxltd.com/wp/2010/05/13/javascript-implementation-of-javas-string-hashcode-method/
+function hexHashCode(str) {
+  var hash = 0;
+  for (var i = 0, len = str.length; i < len; i++) {
+    var char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+  }
+  return (hash & 0xfffffff).toString(16);
+}
+
 // This is the first implementation of a basic plugin, we register the
 // plugin object with pouch and it is mixin'd to each database created
 // (regardless of adapter), adapters can override plugins by providing
@@ -17,7 +30,7 @@ var processKey = function (key) {
 // with _ are reserved function that are called by pouchdb for special
 // notifications.
 
-// If we wanted to store incremental views we can do it here by listening
+// If we wanted to store incremental views we can do it here by li.toString(16)stening
 // to the changes feed (keeping track of our last update_seq between page loads)
 // and storing the result of the map function (possibly using the upcoming
 // extracted adapter functions)
@@ -383,6 +396,79 @@ function httpQuery(db, fun, opts) {
   }, callback);
 }
 
+function getIndex(db, mapFun, reduceFun, cb) {
+  var index = new Index(db, mapFun, reduceFun);
+  var seqKey = toIndexableString([0, 'seq']);
+  index.dbIndex.get(seqKey, function (err, res) {
+    if (err) {
+      return cb(err);
+    }
+    if (res.length) {
+      index.seq = res[0].value;
+      cb(null, index);
+    } else {
+      index.seq = 0;
+      index.dbIndex.put('_local/seq', {seqKey : 0}, function (err) {
+        if (err) {
+          return cb(err);
+        }
+        cb(null, index);
+      });
+    }
+  });
+}
+
+function updateIndex(index) {
+
+  function callMapFun(doc) {
+
+    var keyValues = {};
+
+    var i = 0;
+    var emit = function (key, value) {
+      var indexableStringKey = toIndexableString([key, doc.doc._id, value, i++]);
+      keyValues[indexableStringKey] = value;
+    };
+
+    var mapFun = evalFunc(index.mapFun.toString(), emit, sum, log, Array.isArray, JSON.parse);
+
+    var reduceFun;
+    if (index.reduceFun) {
+      if (builtInReduce[index.reduceFun]) {
+        reduceFun = builtInReduce[index.reduceFun];
+      } else {
+        reduceFun = evalFunc(index.reduceFun.toString(), emit, sum, log, Array.isArray, JSON.parse);
+      }
+    }
+
+    mapFun.call(null, doc.doc);
+
+    if (reduceFun) {
+      Object.keys(keyValues).forEach(function (key) {
+        var value = keyValues[key];
+        var reduceOutput = reduceFun.call()
+      });
+    }
+
+    index.dbIndex.put(doc.doc._id, keyValues);
+  }
+
+  index.db.changes({
+    conflicts: true,
+    include_docs: true,
+    since : index.seq,
+    onChange: function (doc) {
+      if (!('deleted' in doc) && doc.id[0] !== "_") {
+        callMapFun(doc);
+      }
+    },
+    complete: function () {
+      completed = true;
+      checkComplete();
+    }
+  });
+}
+
 exports.query = function (fun, opts, callback) {
   var db = this;
   if (typeof opts === 'function') {
@@ -427,20 +513,39 @@ exports.query = function (fun, opts, callback) {
     }
 
     var parts = fun.split('/');
-    db.get('_design/' + parts[0], function (err, doc) {
+    var designDocName = parts[0];
+    var viewName = parts[1];
+    db.get('_design/' + designDocName, function (err, doc) {
       if (err) {
         opts.complete(err);
         return;
       }
 
-      if (!doc.views[parts[1]]) {
+      if (!doc.views[viewName]) {
         opts.complete({ name: 'not_found', message: 'missing_named_view' });
         return;
       }
-      viewQuery(db, {
-        map: doc.views[parts[1]].map,
-        reduce: doc.views[parts[1]].reduce
-      }, opts);
+
+      var mapFun = doc.views[viewName].map;
+      var reduceFun = doc.views[viewName].reduce;
+
+      getIndex(db, mapFun, reduceFun, function (err, index) {
+        if (err) {
+          return opts.complete(err);
+        } else if (opts.stale === 'ok' || opts.stale === 'update_after') {
+          if (opts.stale === 'update_after') {
+            updateIndex(index);
+          }
+          return queryIndex(index, opts);
+        } else { // stale not ok
+          return updateIndex(index, function (err) {
+            if (err) {
+              return opts.complete(err);
+            }
+            queryIndex(index, opts);
+          });
+        }
+      });
     });
   });
   if (realCB) {
@@ -450,3 +555,11 @@ exports.query = function (fun, opts, callback) {
   }
   return promise;
 };
+
+function Index(db, mapFun, reduceFun) {
+  this.db = db;
+  this.dbIndex = db.index('mrview-' + hexHashCode(
+    mapFun.toString() + (reduceFun && reduceFun.toString())));
+  this.mapFun = mapFun;
+  this.reduceFun = reduceFun;
+}
