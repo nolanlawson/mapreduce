@@ -454,7 +454,7 @@ function updateIndex(index, cb) {
     var keyValues = Object.keys(indexableKeysToKeyValues).map(function (indexableKey) {
       var keyValue = indexableKeysToKeyValues[indexableKey];
       if (reduceFun) {
-        keyValue.reduceOutput =  reduceFun.call([keyValue.key], [keyValue.value], false);
+        keyValue.reduceOutput =  reduceFun.call(null, [keyValue.key], [keyValue.value], false);
       }
       return keyValue;
     });
