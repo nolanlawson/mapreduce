@@ -451,12 +451,20 @@ function updateIndex(index, cb) {
 
     mapFun.call(null, doc.doc);
 
-    var keyValues = Object.keys(indexableKeysToKeyValues).map(function (indexableKey) {
+    var keyValues = {};
+
+    Object.keys(indexableKeysToKeyValues).forEach(function (indexableKey) {
       var keyValue = indexableKeysToKeyValues[indexableKey];
       if (reduceFun) {
-        keyValue.reduceOutput =  reduceFun.call(null, [keyValue.key], [keyValue.value], false);
+        //console.log('keyValue.key');
+        //console.log(keyValue.key);
+        //console.log('keyValue.value');
+        //console.log(keyValue.value);
+        keyValue.reduceOutput = reduceFun.call(null, [keyValue.key], [keyValue.value], false);
+        //console.log('reduceoutput:');
+        //console.log(keyValue.reduceOutput);
       }
-      return keyValue;
+      keyValues[indexableKey] = keyValue;
     });
 
     index.dbIndex.put(doc.doc._id, keyValues, function (err) {
@@ -516,34 +524,102 @@ function updateIndex(index, cb) {
   });
 }
 
+function reduceIndex(index, results, options) {
+
+  //console.log(results);
+
+  var reduceFun;
+  if (builtInReduce[index.reduceFun]) {
+    reduceFun = builtInReduce[index.reduceFun];
+  } else {
+    reduceFun = evalFunc(index.reduceFun.toString(), null, sum, log, Array.isArray, JSON.parse);
+  }
+
+  var groups = [];
+  var error;
+  results.forEach(function (e) {
+    var last = groups[groups.length - 1];
+    if (last && collate(last.key[0][0], e.key) === 0) {
+      last.key.push([e.key, e.id]);
+      last.value.push(e.value);
+      return;
+    }
+    groups.push({key: [
+      [e.key, e.id]
+    ], value: [e.value]});
+  });
+  groups.forEach(function (e) {
+    e.value = reduceFun.call(null, e.key, e.value);
+    if (e.value.sumsqr && e.value.sumsqr instanceof Error) {
+      error = e.value;
+      return;
+    }
+    e.key = e.key[0][0];
+  });
+  if (error) {
+    options.complete(error);
+    return;
+  }
+  options.complete(null, {
+    total_rows: results.length,
+    offset: options.skip || 0,
+    rows: ('limit' in options) ? groups.slice(options.skip, options.limit + options.skip) :
+      (options.skip > 0) ? groups.slice(options.skip) : groups
+  });
+}
+
 function queryIndex(index, opts) {
 
   var indexOpts = {};
+
+  var absoluteStart = toIndexableString([1]);
+  var absoluteEnd = toIndexableString([2]);
+
+  if ('descending' in opts) {
+    indexOpts.descending = opts.descending;
+  }
   if ('startkey' in opts) {
     indexOpts.startkey = toIndexableString([1, opts.startkey]);
+  } else {
+    indexOpts.startkey = opts.descending ? absoluteEnd : absoluteStart;
   }
   if ('endkey' in opts) {
     indexOpts.endkey = toIndexableString([1, opts.endkey]);
+  } else {
+    indexOpts.endkey = opts.descending ? absoluteStart : absoluteEnd;
   }
   if ('key' in opts) {
     indexOpts.startkey = indexOpts.endkey = toIndexableString([1, opts.key]);
   }
-  if ('descending' in opts) {
-    indexOpts.descending = opts.descending;
-  }
-  if ('limit' in opts) {
-    indexOpts.limit = opts.limit;
+  if (!opts.reduce) {
+    if ('limit' in opts) {
+      indexOpts.limit = opts.limit;
+    }
+    indexOpts.skip = opts.skip || 0;
   }
   // TODO: keys
-  indexOpts.skip = opts.skip || 0;
 
   index.dbIndex.count(function (err, totalRows) {
     if (err) {
       return opts.complete(err);
     }
+    console.log(indexOpts);
     index.dbIndex.get(indexOpts, function (err, results) {
+
+      console.log('direct results');
+      console.log(results);
+
+      results = results.map(function (result) {
+        return result.value;
+      });
+
+      console.log('mapped results');
+      console.log(results);
       if (err) {
         return opts.complete(err);
+      }
+      if (opts.reduce) {
+        return reduceIndex(index, results, opts);
       }
       opts.complete(null, {
         total_rows : totalRows,
