@@ -456,13 +456,7 @@ function updateIndex(index, cb) {
     Object.keys(indexableKeysToKeyValues).forEach(function (indexableKey) {
       var keyValue = indexableKeysToKeyValues[indexableKey];
       if (reduceFun) {
-        //console.log('keyValue.key');
-        //console.log(keyValue.key);
-        //console.log('keyValue.value');
-        //console.log(keyValue.value);
         keyValue.reduceOutput = reduceFun.call(null, [keyValue.key], [keyValue.value], false);
-        //console.log('reduceoutput:');
-        //console.log(keyValue.reduceOutput);
       }
       keyValues[indexableKey] = keyValue;
     });
@@ -526,8 +520,6 @@ function updateIndex(index, cb) {
 
 function reduceIndex(index, results, options) {
 
-  //console.log(results);
-
   var reduceFun;
   if (builtInReduce[index.reduceFun]) {
     reduceFun = builtInReduce[index.reduceFun];
@@ -570,25 +562,16 @@ function reduceIndex(index, results, options) {
 
 function queryIndex(index, opts) {
 
-  console.log('input options');
-  console.log(opts);
-
   index.dbIndex.count(function (err, totalRows) {
     if (err) {
       return opts.complete(err);
     }
 
     function getResults(myOpts, cb) {
-      console.log('opts');
-      console.log(myOpts);
       index.dbIndex.get(myOpts, function (err, results) {
-        console.log('direct results');
-        console.log(results);
         results = results.map(function (result) {
           return result.value;
         });
-        console.log('mapped results');
-        console.log(results);
         if (err) {
           return cb(err);
         }
@@ -597,8 +580,6 @@ function queryIndex(index, opts) {
     }
 
     function onResultsReady(results) {
-      console.log('onResultsReady');
-      console.log(results);
       if (opts.reduce) {
         return reduceIndex(index, results, opts);
       } else if (opts.include_docs && results.length) {
@@ -684,8 +665,6 @@ function queryIndex(index, opts) {
       var results = new Array(opts.keys.length);
       var numDone = 0;
       var keysError;
-      console.log('keysLookup');
-      console.log(keysLookup);
       Object.keys(keysLookup).forEach(function (key) {
         var indexOrListOfIndices = keysLookup[key];
         var subOpts = {};

@@ -11,13 +11,17 @@ chai.use(require("chai-as-promised"));
 var Promise = require('bluebird');
 var all = Promise.all;
 
-describe('local', function () {
-  var dbs = process.env.TEST_DB;
-  if (!dbs) {
-    return console.log('No db name specified');
-  }
-  dbs.split(',').forEach(tests);
+var dbs = process.env.TEST_DB;
+if (!dbs) {
+  return console.log('No db name specified');
+}
+dbs.split(',').forEach(function (db) {
+  var dbType = /^http/.test(db) ? 'http' : 'local';
+  describe(dbType, function () {
+    tests(db);
+  });
 });
+
 function tests(dbName) {
   beforeEach(function (done) {
     new Pouch(dbName, function (err, d) {
@@ -608,7 +612,6 @@ function tests(dbName) {
     });
 
     it('Testing query with keys', function () {
-      console.log('testing with keys!!!!!!!!!!!!!!!!!');
       return new Pouch(dbName).then(function (db) {
         var opts = {include_docs: true};
         return db.bulkDocs({
