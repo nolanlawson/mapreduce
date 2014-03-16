@@ -487,6 +487,26 @@ function updateIndex(index, cb) {
 
   var lastSeq = index.seq;
   var gotError;
+  var reportedError;
+  var complete;
+  var numStarted = 0;
+  var numFinished = 0;
+  var checkComplete = function () {
+    if (gotError) {
+      if (!reportedError) {
+        reportedError = true;
+        cb(gotError);
+      }
+    } else if (complete && numStarted === numFinished) {
+      updateIndexSeq(index, lastSeq, function (err) {
+        if (err) {
+          return cb(err);
+        }
+        cb(null);
+      });
+    }
+  };
+
   index.db.changes({
     conflicts: true,
     include_docs: true,
@@ -498,11 +518,14 @@ function updateIndex(index, cb) {
       if (doc.id[0] === '_') {
         return;
       }
+      numStarted++;
       var myCB = function (err) {
         if (err) {
           gotError = err;
         } else {
           lastSeq = Math.max(lastSeq, doc.seq);
+          numFinished++;
+          checkComplete();
         }
       };
       if ('deleted' in doc) {
@@ -512,15 +535,8 @@ function updateIndex(index, cb) {
       }
     },
     complete: function () {
-      if (gotError) {
-        return cb(gotError);
-      }
-      updateIndexSeq(index, lastSeq, function (err) {
-        if (err) {
-          return cb(err);
-        }
-        cb(null);
-      });
+      complete = true;
+      checkComplete();
     }
   });
 }
