@@ -526,6 +526,8 @@ function updateIndex(index, cb) {
 }
 
 function reduceIndex(index, results, options) {
+  // TODO: we already have the reduced output persisted in the database,
+  // so we only need to rereduce
 
   var reduceFun;
   if (builtInReduce[index.reduceFun]) {
@@ -559,11 +561,12 @@ function reduceIndex(index, results, options) {
     options.complete(error);
     return;
   }
+  var skip = options.skip || 0;
   options.complete(null, {
     total_rows: results.length,
-    offset: options.skip || 0,
-    rows: ('limit' in options) ? groups.slice(options.skip, options.limit + options.skip) :
-      (options.skip > 0) ? groups.slice(options.skip) : groups
+    offset: skip,
+    rows: ('limit' in options) ? groups.slice(skip, options.limit + skip) :
+      (skip > 0) ? groups.slice(skip) : groups
   });
 }
 
@@ -575,6 +578,8 @@ function queryIndex(index, opts) {
     }
 
     var shouldReduce = index.reduceFun && opts.reduce !== false;
+
+    var skip = opts.skip || 0;
 
     function fetchFromIndex(indexOpts, cb) {
       index.dbIndex.get(indexOpts, function (err, results) {
@@ -598,7 +603,7 @@ function queryIndex(index, opts) {
           if (++numDocsFetched === results.length) {
             opts.complete(null, {
               total_rows : totalRows,
-              offset : opts.skip || 0,
+              offset : skip,
               rows : results
             });
           }
@@ -614,8 +619,11 @@ function queryIndex(index, opts) {
               checkComplete();
             });
           } else {
+            // TODO: store the rev and only fetch that particular revision?
             index.db.get(viewRow.id, function (_, doc) {
-              viewRow.doc = doc;
+              if (doc) {
+                viewRow.doc = doc;
+              }
               checkComplete();
             });
           }
@@ -623,7 +631,7 @@ function queryIndex(index, opts) {
       } else { // don't need the docs
         opts.complete(null, {
           total_rows : totalRows,
-          offset : opts.skip || 0,
+          offset : skip,
           rows : results
         });
       }
@@ -633,7 +641,7 @@ function queryIndex(index, opts) {
       if (!opts.keys.length) {
         return opts.complete(null, {
           total_rows : totalRows,
-          offset : opts.skip || 0,
+          offset : skip,
           rows : []
         });
       }
@@ -667,6 +675,13 @@ function queryIndex(index, opts) {
             results.forEach(function (result) {
               combinedResults = combinedResults.concat(result);
             });
+
+            if (!shouldReduce) {
+              // since we couldn't skip/limit before, do so now
+              combinedResults = ('limit' in opts) ?
+                combinedResults.slice(skip, opts.limit + skip) :
+                (skip > 0) ? combinedResults.slice(skip) : combinedResults;
+            }
             onMapResultsReady(combinedResults);
           }
         });
@@ -675,6 +690,7 @@ function queryIndex(index, opts) {
 
       var indexOpts = {};
 
+      // don't include the seq, which we stored alongside these
       var absoluteStart = toIndexableString([INDEX_TYPE_KEYVALUE]);
       var absoluteEnd = toIndexableString([INDEX_TYPE_OUT_OF_BOUNDS]);
 
@@ -704,7 +720,7 @@ function queryIndex(index, opts) {
         if ('limit' in opts) {
           indexOpts.limit = opts.limit;
         }
-        indexOpts.skip = opts.skip || 0;
+        indexOpts.skip = skip;
       }
 
       fetchFromIndex(indexOpts, function (err, results) {
@@ -782,7 +798,9 @@ exports.query = function (fun, opts, callback) {
           return opts.complete(err);
         } else if (opts.stale === 'ok' || opts.stale === 'update_after') {
           if (opts.stale === 'update_after') {
-            updateIndex(index);
+            updateIndex(index, function (err) {
+              console.log(err);
+            });
           }
           return queryIndex(index, opts);
         } else { // stale not ok
