@@ -330,8 +330,6 @@ function tests(dbName) {
     });
 
     it("Built in _stats reduce function", function () {
-      this.timeout(30000);
-      console.log('built in stats');
       return new Pouch(dbName).then(function (db) {
         return db.bulkDocs({
           docs: [
@@ -363,7 +361,6 @@ function tests(dbName) {
     });
 
     it("Built in _stats reduce function should throw an error with a promise", function (done) {
-      console.log('built in stats should throw error');
       return new Pouch(dbName).then(function (db) {
         return db.bulkDocs({
           docs: [
@@ -611,6 +608,7 @@ function tests(dbName) {
     });
 
     it('Testing query with keys', function () {
+      console.log('testing with keys!!!!!!!!!!!!!!!!!');
       return new Pouch(dbName).then(function (db) {
         var opts = {include_docs: true};
         return db.bulkDocs({
