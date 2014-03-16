@@ -8,6 +8,11 @@ var normalizeKey = pouchCollate.normalizeKey;
 var evalFunc = require('./evalfunc');
 var log = (typeof console !== 'undefined') ?
   Function.prototype.bind.call(console.log, console) : function () {};
+
+var INDEX_TYPE_SEQ = 0;
+var INDEX_TYPE_KEYVALUE = 1;
+var INDEX_TYPE_OUT_OF_BOUNDS = 2;
+
 var processKey = function (key) {
   // Stringify keys since we want them as map keys (see #35)
   return JSON.stringify(normalizeKey(key));
@@ -398,7 +403,7 @@ function httpQuery(db, fun, opts) {
 }
 
 function updateIndexSeq(index, seq, cb) {
-  var seqKey = toIndexableString([0, 'seq']);
+  var seqKey = toIndexableString([INDEX_TYPE_SEQ, 'seq']);
   var keyValues = {};
   keyValues[seqKey] = seq;
   index.dbIndex.put('_local/seq', keyValues, function (err) {
@@ -412,7 +417,7 @@ function updateIndexSeq(index, seq, cb) {
 
 function getIndex(db, mapFun, reduceFun, cb) {
   var index = new Index(db, mapFun, reduceFun);
-  var seqKey = toIndexableString([0, 'seq']);
+  var seqKey = toIndexableString([INDEX_TYPE_SEQ, 'seq']);
   index.dbIndex.get(seqKey, function (err, res) {
     if (err) {
       return cb(err);
@@ -426,13 +431,15 @@ function updateIndex(index, cb) {
 
   function callMapFun(doc, cb) {
 
+    var docId = doc.doc._id;
+
     var indexableKeysToKeyValues = {};
 
     var i = 0;
     var emit = function (key, value) {
-      var indexableStringKey = toIndexableString([1, key, doc.doc._id, value, i++]);
+      var indexableStringKey = toIndexableString([INDEX_TYPE_KEYVALUE, key, docId, value, i++]);
       indexableKeysToKeyValues[indexableStringKey] = {
-        id  : doc.doc._id,
+        id  : docId,
         key : normalizeKey(key),
         value : normalizeKey(value)
       };
@@ -461,7 +468,7 @@ function updateIndex(index, cb) {
       keyValues[indexableKey] = keyValue;
     });
 
-    index.dbIndex.put(doc.doc._id, keyValues, function (err) {
+    index.dbIndex.put(docId, keyValues, function (err) {
       if (err) {
         return cb(err);
       }
@@ -567,8 +574,10 @@ function queryIndex(index, opts) {
       return opts.complete(err);
     }
 
-    function getResults(myOpts, cb) {
-      index.dbIndex.get(myOpts, function (err, results) {
+    var shouldReduce = index.reduceFun && opts.reduce !== false;
+
+    function fetchFromIndex(indexOpts, cb) {
+      index.dbIndex.get(indexOpts, function (err, results) {
         results = results.map(function (result) {
           return result.value;
         });
@@ -579,8 +588,8 @@ function queryIndex(index, opts) {
       });
     }
 
-    function onResultsReady(results) {
-      if (opts.reduce) {
+    function onMapResultsReady(results) {
+      if (shouldReduce) {
         return reduceIndex(index, results, opts);
       } else if (opts.include_docs && results.length) {
         // fetch and attach documents
@@ -589,7 +598,7 @@ function queryIndex(index, opts) {
           if (++numDocsFetched === results.length) {
             opts.complete(null, {
               total_rows : totalRows,
-              offset : indexOpts.skip,
+              offset : opts.skip || 0,
               rows : results
             });
           }
@@ -614,44 +623,13 @@ function queryIndex(index, opts) {
       } else { // don't need the docs
         opts.complete(null, {
           total_rows : totalRows,
-          offset : indexOpts.skip,
+          offset : opts.skip || 0,
           rows : results
         });
       }
     }
 
-    var indexOpts = {};
-
-    var absoluteStart = toIndexableString([1]);
-    var absoluteEnd = toIndexableString([2]);
-
-    if ('descending' in opts) {
-      indexOpts.descending = opts.descending;
-    }
-    if ('startkey' in opts) {
-      indexOpts.startkey = toIndexableString([1, opts.startkey]);
-    } else {
-      indexOpts.startkey = opts.descending ? absoluteEnd : absoluteStart;
-    }
-    if ('endkey' in opts) {
-      indexOpts.endkey = toIndexableString([1, opts.endkey]);
-    } else {
-      indexOpts.endkey = opts.descending ? absoluteStart : absoluteEnd;
-    }
-    if ('key' in opts) {
-      indexOpts.startkey = toIndexableString([1, opts.key]);
-      indexOpts.endkey = toIndexableString([1, opts.key, {}]);
-    }
-
-    if (!opts.reduce && !('keys' in opts)) {
-      if ('limit' in opts) {
-        indexOpts.limit = opts.limit;
-      }
-      indexOpts.skip = opts.skip || 0;
-    }
-
     if ('keys' in opts) {
-
       if (!opts.keys.length) {
         return opts.complete(null, {
           total_rows : totalRows,
@@ -659,50 +637,81 @@ function queryIndex(index, opts) {
           rows : []
         });
       }
-
       var keysLookup = createKeysLookup(opts.keys);
       var trueNumKeys = Object.keys(keysLookup).length;
       var results = new Array(opts.keys.length);
       var numDone = 0;
       var keysError;
       Object.keys(keysLookup).forEach(function (key) {
-        var indexOrListOfIndices = keysLookup[key];
-        var subOpts = {};
-        subOpts.startkey = toIndexableString([1, JSON.parse(key)]);
-        subOpts.endkey = toIndexableString([1, JSON.parse(key), {}]);
-        getResults(subOpts, function (err, subResults) {
+        var keysLookupIndices = keysLookup[key];
+        var trueKey = JSON.parse(key);
+        var indexOpts = {};
+        indexOpts.startkey = toIndexableString([INDEX_TYPE_KEYVALUE, trueKey]);
+        indexOpts.endkey = toIndexableString([INDEX_TYPE_KEYVALUE, trueKey, {}]);
+        fetchFromIndex(indexOpts, function (err, subResults) {
           if (err) {
             keysError = true;
             return opts.complete(err);
-          }
-
-          if (keysError) {
+          } else if (keysError) {
             return;
-          }
-
-          if (typeof indexOrListOfIndices === 'number') {
-            results[indexOrListOfIndices] = subResults;
-          } else { // array
-            indexOrListOfIndices.forEach(function (i) {
+          } else if (typeof keysLookupIndices === 'number') {
+            results[keysLookupIndices] = subResults;
+          } else { // array of indices
+            keysLookupIndices.forEach(function (i) {
               results[i] = subResults;
             });
           }
           if (++numDone === trueNumKeys) {
             // combine results
-            var collatedResults = [];
+            var combinedResults = [];
             results.forEach(function (result) {
-              collatedResults = collatedResults.concat(result);
+              combinedResults = combinedResults.concat(result);
             });
-            onResultsReady(collatedResults);
+            onMapResultsReady(combinedResults);
           }
         });
       });
     } else { // normal query, no 'keys'
-      getResults(indexOpts, function (err, results) {
+
+      var indexOpts = {};
+
+      var absoluteStart = toIndexableString([INDEX_TYPE_KEYVALUE]);
+      var absoluteEnd = toIndexableString([INDEX_TYPE_OUT_OF_BOUNDS]);
+
+      if ('descending' in opts) {
+        indexOpts.descending = opts.descending;
+      }
+      if ('startkey' in opts) {
+        indexOpts.startkey = opts.descending ?
+          toIndexableString([INDEX_TYPE_KEYVALUE, opts.startkey, {}]) :
+          toIndexableString([INDEX_TYPE_KEYVALUE, opts.startkey]);
+      } else {
+        indexOpts.startkey = opts.descending ? absoluteEnd : absoluteStart;
+      }
+      if ('endkey' in opts) {
+        indexOpts.endkey = opts.descending ?
+          toIndexableString([INDEX_TYPE_KEYVALUE, opts.endkey]) :
+          toIndexableString([INDEX_TYPE_KEYVALUE, opts.endkey, {}]);
+      } else {
+        indexOpts.endkey = opts.descending ? absoluteStart : absoluteEnd;
+      }
+      if ('key' in opts) {
+        indexOpts.startkey = toIndexableString([INDEX_TYPE_KEYVALUE, opts.key]);
+        indexOpts.endkey = toIndexableString([INDEX_TYPE_KEYVALUE, opts.key, {}]);
+      }
+
+      if (!shouldReduce) {
+        if ('limit' in opts) {
+          indexOpts.limit = opts.limit;
+        }
+        indexOpts.skip = opts.skip || 0;
+      }
+
+      fetchFromIndex(indexOpts, function (err, results) {
         if (err) {
           return opts.complete(err);
         }
-        onResultsReady(results);
+        onMapResultsReady(results);
       });
     }
   });
