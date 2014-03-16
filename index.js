@@ -640,7 +640,7 @@ function queryIndex(index, opts) {
       var keysLookup = createKeysLookup(opts.keys);
       var trueNumKeys = Object.keys(keysLookup).length;
       var results = new Array(opts.keys.length);
-      var numDone = 0;
+      var numKeysFetched = 0;
       var keysError;
       Object.keys(keysLookup).forEach(function (key) {
         var keysLookupIndices = keysLookup[key];
@@ -661,7 +661,7 @@ function queryIndex(index, opts) {
               results[i] = subResults;
             });
           }
-          if (++numDone === trueNumKeys) {
+          if (++numKeysFetched === trueNumKeys) {
             // combine results
             var combinedResults = [];
             results.forEach(function (result) {
