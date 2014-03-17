@@ -196,20 +196,11 @@ function checkQueryParseError(options, fun) {
   if (typeof options[startkeyName] !== 'undefined' &&
     typeof options[endkeyName] !== 'undefined' &&
     collate(options[startkeyName], options[endkeyName]) > 0) {
-    return {
-      status : 400,
-      name : 'query_parse_error',
-      message : 'No rows can match your key range, reverse your ' +
-        'start_key and end_key or set {descending : true}'
-    };
+    return new QueryParseError('No rows can match your key range, reverse your ' +
+        'start_key and end_key or set {descending : true}');
   } else if (fun.reduce && options.reduce !== false && options.include_docs) {
-    return {
-      status : 400,
-      name : 'query_parse_error',
-      message : '{include_docs:true} is invalid for reduce'
-    };
+    return new QueryParseError('{include_docs:true} is invalid for reduce');
   }
-
 }
 
 function viewQuery(db, fun, options) {
@@ -913,3 +904,20 @@ function Index(db, mapFun, reduceFun) {
   this.mapFun = mapFun;
   this.reduceFun = reduceFun;
 }
+
+function QueryParseError(message) {
+  this.status = 400;
+  this.name = 'query_parse_error';
+  this.message = message;
+  this.error = true;
+}
+
+QueryParseError.prototype__proto__ = Error.prototype;
+
+QueryParseError.prototype.toString = function () {
+  return JSON.stringify({
+    status: this.status,
+    name: this.name,
+    message: this.message
+  });
+};
