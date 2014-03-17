@@ -634,7 +634,7 @@ function queryIndex(index, opts) {
     if (err) {
       return opts.complete(err);
     }
-    var totalRows = count - 1; // -1 for the stored 'seq' value
+    var totalRows = Math.max(0, count - 1); // -1 for the stored 'seq' value
 
     var shouldReduce = index.reduceFun && opts.reduce !== false;
     var skip = opts.skip || 0;
@@ -871,7 +871,10 @@ exports.query = function (fun, opts, callback) {
         } else if (opts.stale === 'ok' || opts.stale === 'update_after') {
           if (opts.stale === 'update_after') {
             updateIndex(index, function (err) {
-              console.log(err);
+              if (err) {
+                console.log('index update error!');
+                console.log(err);
+              }
             });
           }
           return queryIndex(index, opts);

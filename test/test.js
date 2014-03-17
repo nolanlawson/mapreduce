@@ -25,6 +25,12 @@ dbs.split(',').forEach(function (db) {
   });
 });
 
+function setTimeoutPromise(time) {
+  return new Promise(function (resolve, reject) {
+    setTimeout(function () { resolve(true); }, time);
+  });
+}
+
 function tests(dbName, dbType, viewType) {
 
   var createView;
@@ -1453,5 +1459,70 @@ function tests(dbName, dbType, viewType) {
         });
       });
     });
+
+    if (viewType === 'persisted') {
+      it('should query correctly when stale', function () {
+        return new Pouch(dbName).then(function (db) {
+          return createView(db, {
+            map : function (doc) {
+              emit(doc.name);
+            }
+          }).then(function (queryFun) {
+            return db.bulkDocs({docs : [
+              {name : 'bar', _id : '1'},
+              {name : 'foo', _id : '2'}
+            ]}).then(function () {
+              return db.query(queryFun, {stale : 'ok'});
+            }).then(function (res) {
+              res.total_rows.should.be.within(0, 2);
+              res.offset.should.equal(0);
+              res.rows.length.should.be.within(0, 2);
+              return db.query(queryFun, {stale : 'update_after'});
+            }).then(function (res) {
+              res.total_rows.should.be.within(0, 2);
+              res.rows.length.should.be.within(0, 2);
+              return setTimeoutPromise(5);
+            }).then(function () {
+              return db.query(queryFun, {stale : 'ok'});
+            }).then(function (res) {
+              res.total_rows.should.equal(2);
+              res.rows.length.should.equal(2);
+              return db.get('2');
+            }).then(function (doc2) {
+              return db.remove(doc2);
+            }).then(function () {
+              return db.query(queryFun, {stale : 'ok', include_docs : true});
+            }).then(function (res) {
+              res.total_rows.should.be.within(1, 2);
+              res.rows.length.should.be.within(1, 2);
+              if (res.rows.length === 2) {
+                res.rows[1].key.should.equal('foo');
+                should.not.exist(res.rows[1].doc, 'should not throw if doc removed');
+              }
+              return db.query(queryFun);
+            }).then(function (res) {
+              res.total_rows.should.equal(1);
+              res.rows.length.should.equal(1);
+              return db.get('1');
+            }).then(function (doc1) {
+              doc1.name = 'baz';
+              return db.post(doc1);
+            }).then(function () {
+              return db.query(queryFun, {stale : 'update_after'});
+            }).then(function (res) {
+              res.rows.length.should.equal(1);
+              ['baz', 'bar'].indexOf(res.rows[0].key).should.be.above(-1,
+                'key might be stale, thats ok');
+              return setTimeoutPromise(5);
+            }).then(function () {
+              return db.query(queryFun, {stale : 'ok'});
+            }).then(function (res) {
+              res.rows.length.should.equal(1);
+              res.rows[0].key.should.equal('baz');
+            });
+          });
+        });
+      });
+    }
   });
 }
