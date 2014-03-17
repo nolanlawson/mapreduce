@@ -2,6 +2,7 @@
 
 var pouchCollate = require('pouchdb-collate');
 var Promise = typeof global.Promise === 'function' ? global.Promise : require('lie');
+var TaskQueue = require('./taskqueue');
 var collate = pouchCollate.collate;
 var toIndexableString = pouchCollate.toIndexableString;
 var normalizeKey = pouchCollate.normalizeKey;
@@ -12,6 +13,9 @@ var log = (typeof console !== 'undefined') ?
 var INDEX_TYPE_SEQ = 0;
 var INDEX_TYPE_KEYVALUE = 1;
 var INDEX_TYPE_OUT_OF_BOUNDS = 2;
+
+var updateIndexQueue = new TaskQueue();
+updateIndexQueue.registerTask('updateIndex', updateIndexInner);
 
 var processKey = function (key) {
   // Stringify keys since we want them as map keys (see #35)
@@ -459,6 +463,11 @@ function getIndex(db, mapFun, reduceFun, cb) {
 }
 
 function updateIndex(index, cb) {
+  updateIndexQueue.addTask('updateIndex', [index, cb]);
+  updateIndexQueue.execute();
+}
+
+function updateIndexInner(index, cb) {
 
   function callMapFun(doc, cb) {
 
