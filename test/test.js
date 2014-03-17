@@ -632,46 +632,49 @@ function tests(dbName, dbType, viewType) {
       });
     });
 
-    it('Map documents on 0/null/undefined/empty string', function (done) {
-      var mapFunction = function (doc) {
-        emit(doc.num);
-      };
+    it('Map documents on 0/null/undefined/empty string', function () {
       return new Pouch(dbName).then(function (db) {
-        var docs = [
-          {_id: '0', num: 0},
-          {_id: '1', num: 1},
-          {_id: 'undef' /* num is undefined */},
-          {_id: 'null', num: null},
-          {_id: 'empty', num: ''},
-          {_id: 'nan', num: NaN},
-          {_id: 'inf', num: Infinity},
-          {_id: 'neginf', num: -Infinity}
-        ];
-        return db.bulkDocs({docs: docs}).then(function () {
-          return db.query(mapFunction, {key: 0});
-        }).then(function (data) {
-          data.rows.should.have.length(1);
-          data.rows[0].id.should.equal('0');
+        return createView(db, {
+          map : function (doc) {
+            emit(doc.num);
+          }
+        }).then(function (mapFunction) {
+          var docs = [
+            {_id: '0', num: 0},
+            {_id: '1', num: 1},
+            {_id: 'undef' /* num is undefined */},
+            {_id: 'null', num: null},
+            {_id: 'empty', num: ''},
+            {_id: 'nan', num: NaN},
+            {_id: 'inf', num: Infinity},
+            {_id: 'neginf', num: -Infinity}
+          ];
+          return db.bulkDocs({docs: docs}).then(function () {
+            return db.query(mapFunction, {key: 0});
+          }).then(function (data) {
+            data.rows.should.have.length(1);
+            data.rows[0].id.should.equal('0');
 
-          return db.query(mapFunction, {key: ''});
-        }).then(function (data) {
-          data.rows.should.have.length(1);
-          data.rows[0].id.should.equal('empty');
+            return db.query(mapFunction, {key: ''});
+          }).then(function (data) {
+            data.rows.should.have.length(1);
+            data.rows[0].id.should.equal('empty');
 
-          return db.query(mapFunction, {key: undefined});
-        }).then(function (data) {
-          data.rows.should.have.length(8); // everything
+            return db.query(mapFunction, {key: undefined});
+          }).then(function (data) {
+            data.rows.should.have.length(8); // everything
 
-          // keys that should all resolve to null
-          var emptyKeys = [null, NaN, Infinity, -Infinity];
-          var numDone = 0;
-          return all(emptyKeys.map(function (emptyKey) {
-            return db.query(mapFunction, {key: emptyKey}).then(function (data) {
-              data.rows.map(function (row) {
-                return row.id;
-              }).should.deep.equal(['inf', 'nan', 'neginf', 'null', 'undef']);
-            });
-          }));
+            // keys that should all resolve to null
+            var emptyKeys = [null, NaN, Infinity, -Infinity];
+            var numDone = 0;
+            return all(emptyKeys.map(function (emptyKey) {
+              return db.query(mapFunction, {key: emptyKey}).then(function (data) {
+                data.rows.map(function (row) {
+                  return row.id;
+                }).should.deep.equal(['inf', 'nan', 'neginf', 'null', 'undef']);
+              });
+            }));
+          });
         });
       });
     });

@@ -722,30 +722,28 @@ function queryIndex(index, opts) {
       var absoluteStart = toIndexableString([INDEX_TYPE_KEYVALUE]);
       var absoluteEnd = toIndexableString([INDEX_TYPE_OUT_OF_BOUNDS]);
 
-      if ('descending' in opts) {
-        indexOpts.descending = opts.descending;
-      }
-      if ('startkey' in opts) {
+      indexOpts.descending = opts.descending;
+      if (typeof opts.startkey !== 'undefined') {
         indexOpts.startkey = opts.descending ?
           toIndexableString([INDEX_TYPE_KEYVALUE, opts.startkey, {}]) :
           toIndexableString([INDEX_TYPE_KEYVALUE, opts.startkey]);
       } else {
         indexOpts.startkey = opts.descending ? absoluteEnd : absoluteStart;
       }
-      if ('endkey' in opts) {
+      if (typeof opts.endkey !== 'undefined') {
         indexOpts.endkey = opts.descending ?
           toIndexableString([INDEX_TYPE_KEYVALUE, opts.endkey]) :
           toIndexableString([INDEX_TYPE_KEYVALUE, opts.endkey, {}]);
       } else {
         indexOpts.endkey = opts.descending ? absoluteStart : absoluteEnd;
       }
-      if ('key' in opts) {
+      if (typeof opts.key !== 'undefined') {
         indexOpts.startkey = toIndexableString([INDEX_TYPE_KEYVALUE, opts.key]);
         indexOpts.endkey = toIndexableString([INDEX_TYPE_KEYVALUE, opts.key, {}]);
       }
 
       if (!shouldReduce) {
-        if ('limit' in opts) {
+        if (typeof opts.limit === 'number') {
           indexOpts.limit = opts.limit;
         }
         indexOpts.skip = skip;
@@ -788,6 +786,15 @@ exports.query = function (fun, opts, callback) {
         resolve(data);
       }
     };
+
+    if (typeof fun === 'object') {
+      // copy to avoid overwriting
+      var funCopy = {};
+      Object.keys(fun).forEach(function (key) {
+        funCopy[key] = fun[key];
+      });
+      fun = funCopy;
+    }
 
     if (db.type() === 'http') {
       if (typeof fun === 'function') {
