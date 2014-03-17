@@ -96,32 +96,48 @@ var builtInReduce = {
     return sum(values);
   },
 
-  "_count": function (keys, values, rereduce) {
+  "_count": function (keys, values) {
     return values.length;
   },
 
-  "_stats": function (keys, values) {
-    return {
-      'sum': sum(values),
-      'min': Math.min.apply(null, values),
-      'max': Math.max.apply(null, values),
-      'count': values.length,
-      'sumsqr': (function () {
-        var _sumsqr = 0;
-        var error;
-        for (var idx in values) {
-          if (typeof values[idx] === 'number') {
-            _sumsqr += values[idx] * values[idx];
-          } else {
-            error =  new Error('builtin _stats function requires map values to be numbers');
-            error.name = 'invalid_value';
-            error.status = 500;
-            return error;
-          }
+  "_stats": function (keys, values, rereduce) {
+
+    function sumsqr(values) {
+      var _sumsqr = 0;
+      var error;
+      for (var idx in values) {
+        if (typeof values[idx] === 'number') {
+          _sumsqr += values[idx] * values[idx];
+        } else {
+          error =  new Error();
+          error.name = 'invalid_value';
+          error.message = 'builtin _stats function requires map values to be numbers';
+          error.status = 500;
+          return error;
         }
-        return _sumsqr;
-      })()
-    };
+      }
+      return _sumsqr;
+    }
+    if (rereduce) {
+      var result = values[0];
+      for (var i = 1, len = values.length; i < len; i++) {
+        var current = values[i];
+        result.sum += current.sum;
+        result.min = Math.min(result.min, current.min);
+        result.max = Math.max(result.max, current.max);
+        result.count += current.count;
+        result.sumsqr = sumsqr([result.sumsqr, current.sumsqr]);
+      }
+      return result;
+    } else {
+      return {
+        sum     : sum(values),
+        min     : Math.min.apply(null, values),
+        max     : Math.max.apply(null, values),
+        count   : values.length,
+        sumsqr : sumsqr(values)
+      };
+    }
   }
 };
 
@@ -542,15 +558,10 @@ function updateIndex(index, cb) {
 }
 
 function reduceIndex(index, results, options) {
-  // TODO: we already have the reduced output persisted in the database,
+  // we already have the reduced output persisted in the database,
   // so we only need to rereduce
 
   var reduceFun;
-  if (builtInReduce[index.reduceFun]) {
-    reduceFun = builtInReduce[index.reduceFun];
-  } else {
-    reduceFun = evalFunc(index.reduceFun.toString(), null, sum, log, Array.isArray, JSON.parse);
-  }
 
   var groups = [];
   var error;
@@ -558,24 +569,38 @@ function reduceIndex(index, results, options) {
     var last = groups[groups.length - 1];
     if (last && collate(last.key[0][0], e.key) === 0) {
       last.key.push([e.key, e.id]);
-      last.value.push(e.value);
-      return;
+      last.value.push(e.reduceOutput);
+    } else {
+      groups.push({
+        key: [[e.key, e.id]],
+        value: [e.reduceOutput]
+      });
     }
-    groups.push({key: [
-      [e.key, e.id]
-    ], value: [e.value]});
   });
   groups.forEach(function (e) {
-    e.value = reduceFun.call(null, e.key, e.value);
-    if (e.value.sumsqr && e.value.sumsqr instanceof Error) {
+    if (e.value.length === 1) {
+      e.value = e.value[0];
+    } else { // need to rereduce
+      if (!reduceFun) {
+        // lazily initialize reduceFun
+        if (builtInReduce[index.reduceFun]) {
+          reduceFun = builtInReduce[index.reduceFun];
+        } else {
+          reduceFun = evalFunc(
+            index.reduceFun.toString(), null, sum, log, Array.isArray, JSON.parse);
+        }
+      }
+      e.value = reduceFun.call(null, null, e.value, true);
+    }
+    if (e.value.sumsqr && e.value.sumsqr.status === 500) {
       error = e.value;
       return;
     }
     e.key = e.key[0][0];
   });
   if (error) {
-    options.complete(error);
-    return;
+    console.log(error);
+    return options.complete(error);
   }
   var skip = options.skip || 0;
   options.complete(null, {
@@ -594,7 +619,6 @@ function queryIndex(index, opts) {
     }
 
     var shouldReduce = index.reduceFun && opts.reduce !== false;
-
     var skip = opts.skip || 0;
 
     function fetchFromIndex(indexOpts, cb) {
@@ -615,34 +639,22 @@ function queryIndex(index, opts) {
       } else if (opts.include_docs && results.length) {
         // fetch and attach documents
         var numDocsFetched = 0;
-        var checkComplete = function () {
-          if (++numDocsFetched === results.length) {
-            opts.complete(null, {
-              total_rows : totalRows,
-              offset : skip,
-              rows : results
-            });
-          }
-        };
         results.forEach(function (viewRow) {
           var val = viewRow.value;
-          if (val && typeof val === 'object' && val._id) {
-            //in this special case, join on _id (issue #106)
-            index.db.get(val._id, function (_, joined_doc) {
-              if (joined_doc) {
-                viewRow.doc = joined_doc;
-              }
-              checkComplete();
-            });
-          } else {
-            // TODO: store the rev and only fetch that particular revision?
-            index.db.get(viewRow.id, function (_, doc) {
-              if (doc) {
-                viewRow.doc = doc;
-              }
-              checkComplete();
-            });
-          }
+          //in this special case, join on _id (issue #106)
+          var dbId = (val && typeof val === 'object' && val._id) || viewRow.id;
+          index.db.get(dbId, function (_, joined_doc) {
+            if (joined_doc) {
+              viewRow.doc = joined_doc;
+            }
+            if (++numDocsFetched === results.length) {
+              opts.complete(null, {
+                total_rows : totalRows,
+                offset : skip,
+                rows : results
+              });
+            }
+          });
         });
       } else { // don't need the docs
         opts.complete(null, {
@@ -662,7 +674,7 @@ function queryIndex(index, opts) {
         });
       }
       var keysLookup = createKeysLookup(opts.keys);
-      var trueNumKeys = Object.keys(keysLookup).length;
+      var keysLookupLen = Object.keys(keysLookup).length;
       var results = new Array(opts.keys.length);
       var numKeysFetched = 0;
       var keysError;
@@ -685,7 +697,7 @@ function queryIndex(index, opts) {
               results[i] = subResults;
             });
           }
-          if (++numKeysFetched === trueNumKeys) {
+          if (++numKeysFetched === keysLookupLen) {
             // combine results
             var combinedResults = [];
             results.forEach(function (result) {
