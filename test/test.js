@@ -967,20 +967,13 @@ function tests(dbName, dbType, viewType) {
       });
     });
 
-    it('opts.keys should work with complex keys', function (done) {
-      new Pouch(dbName, function (err, db) {
-        db.bulkDocs({
-          docs: [
-            {foo: {key2: 'value2'}},
-            {foo: {key1: 'value1'}},
-            {foo: [0, 0]},
-            {foo: ['test', 1]},
-            {foo: [0, false]}
-          ]
-        }, function (err) {
-          var mapFunction = function (doc) {
+    it('opts.keys should work with complex keys', function () {
+      return new Pouch(dbName).then(function (db) {
+        return createView(db, {
+          map : function (doc) {
             emit(doc.foo, doc.foo);
-          };
+          }
+        }).then(function (mapFunction) {
           var keys = [
             {key: 'missing'},
             ['test', 1],
@@ -988,13 +981,22 @@ function tests(dbName, dbType, viewType) {
             ['missing'],
             [0, 0]
           ];
-          var opts = {keys: keys};
-          db.query(mapFunction, opts, function (err, data) {
+          return db.bulkDocs({
+            docs: [
+              {foo: {key2: 'value2'}},
+              {foo: {key1: 'value1'}},
+              {foo: [0, 0]},
+              {foo: ['test', 1]},
+              {foo: [0, false]}
+            ]
+          }).then(function () {
+            var opts = {keys: keys};
+            return db.query(mapFunction, opts);
+          }).then(function (data) {
             data.rows.should.have.length(3);
             data.rows[0].value.should.deep.equal(keys[1]);
             data.rows[1].value.should.deep.equal(keys[2]);
             data.rows[2].value.should.deep.equal(keys[4]);
-            done();
           });
         });
       });
@@ -1005,169 +1007,178 @@ function tests(dbName, dbType, viewType) {
         return row.id;
       }
       return new Pouch(dbName).then(function (db) {
-        return db.bulkDocs({
-          docs: [
-            {_id: '1969', date: '1969 was when Space Oddity hit'},
-            {_id: '1971', date : new Date('1971-12-17T00:00:00.000Z')}, // Hunky Dory was released
-            {_id: '1972', date: '1972 was when Ziggy landed on Earth'},
-            {_id: '1977', date: new Date('1977-01-14T00:00:00.000Z')}, // Low was released
-            {_id: '1985', date: '1985+ is better left unmentioned'}
-          ]
-        }).then(function () {
-          var mapFunction = function (doc) {
+        return createView(db, {
+          map : function (doc) {
             emit(doc.date, null);
-          };
-          return db.query(mapFunction);
-        }).then(function (data) {
-          data.rows.map(ids).should.deep.equal(['1969', '1971', '1972', '1977', '1985']);
+          }
+        }).then(function (mapFunction) {
+          return db.bulkDocs({
+            docs: [
+              {_id: '1969', date: '1969 was when Space Oddity hit'},
+              {_id: '1971', date : new Date('1971-12-17T00:00:00.000Z')}, // Hunky Dory was released
+              {_id: '1972', date: '1972 was when Ziggy landed on Earth'},
+              {_id: '1977', date: new Date('1977-01-14T00:00:00.000Z')}, // Low was released
+              {_id: '1985', date: '1985+ is better left unmentioned'}
+            ]
+          }).then(function () {
+            return db.query(mapFunction);
+          }).then(function (data) {
+            data.rows.map(ids).should.deep.equal(['1969', '1971', '1972', '1977', '1985']);
+          });
         });
       });
     });
 
-    it('should error with a callback', function (done) {
-      new Pouch(dbName, function (err, db) {
-        db.query('fake/thing', function (err) {
-          should.exist(err);
-          done();
+    if (viewType === 'persisted') {
+      it('should error with a callback', function (done) {
+        new Pouch(dbName, function (err, db) {
+          db.query('fake/thing', function (err) {
+            should.exist(err);
+            done();
+          });
         });
       });
-    });
+    }
 
     it('should work with a joined doc', function () {
       function change(row) {
         return [row.key, row.doc._id, row.doc.val];
       }
       return new Pouch(dbName).then(function (db) {
-        return db.bulkDocs({
-          docs: [
-            {_id: 'a', join: 'b', color: 'green'},
-            {_id: 'b', val: 'c'},
-            {_id: 'd', join: 'f', color: 'red'},
-            {
-              _id: "_design/test",
-              views: {
-                mapFunc: {
-                  map: "function (doc) {if(doc.join){emit(doc.color, {_id:doc.join});}}"
-                }
-              }
+        return createView(db, {
+          map: function (doc) {
+            if (doc.join) {
+              emit(doc.color, {_id : doc.join});
             }
-          ]
-        }).then(function () {
-          return db.query('test/mapFunc', {include_docs: true});
-        }).then(function (resp) {
-          return change(resp.rows[0]).should.deep.equal(['green', 'b', 'c']);
+          }
+        }).then(function (mapFunction) {
+          return db.bulkDocs({
+            docs: [
+              {_id: 'a', join: 'b', color: 'green'},
+              {_id: 'b', val: 'c'},
+              {_id: 'd', join: 'f', color: 'red'}
+            ]
+          }).then(function () {
+            return db.query(mapFunction, {include_docs: true});
+          }).then(function (resp) {
+            return change(resp.rows[0]).should.deep.equal(['green', 'b', 'c']);
+          });
         });
       });
     });
 
     it('should query correctly with a variety of criteria', function (done) {
       this.timeout(10000);
-      var db = new Pouch(dbName);
+      return new Pouch(dbName).then(function (db) {
 
-      var docs = [
-        {_id : '0'},
-        {_id : '1'},
-        {_id : '2'},
-        {_id : '3'},
-        {_id : '4'},
-        {_id : '5'},
-        {_id : '6'},
-        {_id : '7'},
-        {_id : '8'},
-        {_id : '9'}
-      ];
-      var mapFun = function (doc) {
-        emit(doc._id);
-      };
-      return db.bulkDocs({docs : docs}).then(function (res) {
-        docs[3]._deleted = true;
-        docs[7]._deleted = true;
-        docs[3]._rev = res[3].rev;
-        docs[7]._rev = res[7].rev;
-        return db.remove(docs[3]);
-      }).then(function () {
-        return db.remove(docs[7]);
-      }).then(function () {
-        return db.query(mapFun, {});
-      }).then(function (res) {
-        res.rows.should.have.length(8, 'correctly return rows');
-        res.total_rows.should.equal(8, 'correctly return total_rows');
-        return db.query(mapFun, {startkey : '5'});
-      }).then(function (res) {
-        res.rows.should.have.length(4, 'correctly return rows');
-        res.total_rows.should.equal(8, 'correctly return total_rows');
-        return db.query(mapFun, {startkey : '5', skip : 2, limit : 10});
-      }).then(function (res) {
-        res.rows.should.have.length(2, 'correctly return rows');
-        res.total_rows.should.equal(8, 'correctly return total_rows');
-        return db.query(mapFun, {startkey : '5', descending : true, skip : 1});
-      }).then(function (res) {
-        res.rows.should.have.length(4, 'correctly return rows');
-        res.total_rows.should.equal(8, 'correctly return total_rows');
-        return db.query(mapFun, {startkey : '5', endkey : 'z'});
-      }).then(function (res) {
-        res.rows.should.have.length(4, 'correctly return rows');
-        res.total_rows.should.equal(8, 'correctly return total_rows');
-        return db.query(mapFun, {startkey : '5', endkey : '5'});
-      }).then(function (res) {
-        res.rows.should.have.length(1, 'correctly return rows');
-        res.total_rows.should.equal(8, 'correctly return total_rows');
-        return db.query(mapFun, {startkey : '5', endkey : '4', descending : true});
-      }).then(function (res) {
-        res.rows.should.have.length(2, 'correctly return rows');
-        res.total_rows.should.equal(8, 'correctly return total_rows');
-        return db.query(mapFun, {startkey : '3', endkey : '7', descending : false});
-      }).then(function (res) {
-        res.rows.should.have.length(3, 'correctly return rows');
-        res.total_rows.should.equal(8, 'correctly return total_rows');
-        return db.query(mapFun, {startkey : '7', endkey : '3', descending : true});
-      }).then(function (res) {
-        res.rows.should.have.length(3, 'correctly return rows');
-        res.total_rows.should.equal(8, 'correctly return total_rows');
-        return db.query(mapFun, {startkey : '', endkey : '0'});
-      }).then(function (res) {
-        res.rows.should.have.length(1, 'correctly return rows');
-        res.total_rows.should.equal(8, 'correctly return total_rows');
-        return db.query(mapFun, {keys : ['0', '1', '3']});
-      }).then(function (res) {
-        res.rows.should.have.length(2, 'correctly return rows');
-        res.total_rows.should.equal(8, 'correctly return total_rows');
-        return db.query(mapFun, {keys : ['0', '1', '0', '2', '1', '1']});
-      }).then(function (res) {
-        res.rows.should.have.length(6, 'correctly return rows');
-        res.rows.map(function (row) { return row.key; }).should.deep.equal(
-          ['0', '1', '0', '2', '1', '1']);
-        res.total_rows.should.equal(8, 'correctly return total_rows');
-        return db.query(mapFun, {keys : []});
-      }).then(function (res) {
-        res.rows.should.have.length(0, 'correctly return rows');
-        res.total_rows.should.equal(8, 'correctly return total_rows');
-        return db.query(mapFun, {keys : ['7']});
-      }).then(function (res) {
-        res.rows.should.have.length(0, 'correctly return rows');
-        res.total_rows.should.equal(8, 'correctly return total_rows');
-        return db.query(mapFun, {key : '3'});
-      }).then(function (res) {
-        res.rows.should.have.length(0, 'correctly return rows');
-        res.total_rows.should.equal(8, 'correctly return total_rows');
-        return db.query(mapFun, {key : '2'});
-      }).then(function (res) {
-        res.rows.should.have.length(1, 'correctly return rows');
-        res.total_rows.should.equal(8, 'correctly return total_rows');
-        return db.query(mapFun, {key : 'z'});
-      }).then(function (res) {
-        res.rows.should.have.length(0, 'correctly return rows');
-        res.total_rows.should.equal(8, 'correctly return total_rows');
+        return createView(db, {
+          map : function (doc) {
+            emit(doc._id);
+          }
+        }).then(function (mapFun) {
 
-        db.query(mapFun, {startkey : '5', endkey : '4'}).then(function (res) {
-          res.should.not.exist('expected error on reversed start/endkey');
-          done();
-        }).catch(function (err) {
-          err.status.should.equal(400);
-          err.name.should.equal('query_parse_error');
-          err.message.should.be.a('string');
+          var docs = [
+            {_id : '0'},
+            {_id : '1'},
+            {_id : '2'},
+            {_id : '3'},
+            {_id : '4'},
+            {_id : '5'},
+            {_id : '6'},
+            {_id : '7'},
+            {_id : '8'},
+            {_id : '9'}
+          ];
+          return db.bulkDocs({docs : docs}).then(function (res) {
+            docs[3]._deleted = true;
+            docs[7]._deleted = true;
+            docs[3]._rev = res[3].rev;
+            docs[7]._rev = res[7].rev;
+            return db.remove(docs[3]);
+          }).then(function () {
+            return db.remove(docs[7]);
+          }).then(function () {
+            return db.query(mapFun, {});
+          }).then(function (res) {
+            res.rows.should.have.length(8, 'correctly return rows');
+            res.total_rows.should.equal(8, 'correctly return total_rows');
+            return db.query(mapFun, {startkey : '5'});
+          }).then(function (res) {
+            res.rows.should.have.length(4, 'correctly return rows');
+            res.total_rows.should.equal(8, 'correctly return total_rows');
+            return db.query(mapFun, {startkey : '5', skip : 2, limit : 10});
+          }).then(function (res) {
+            res.rows.should.have.length(2, 'correctly return rows');
+            res.total_rows.should.equal(8, 'correctly return total_rows');
+            return db.query(mapFun, {startkey : '5', descending : true, skip : 1});
+          }).then(function (res) {
+            res.rows.should.have.length(4, 'correctly return rows');
+            res.total_rows.should.equal(8, 'correctly return total_rows');
+            return db.query(mapFun, {startkey : '5', endkey : 'z'});
+          }).then(function (res) {
+            res.rows.should.have.length(4, 'correctly return rows');
+            res.total_rows.should.equal(8, 'correctly return total_rows');
+            return db.query(mapFun, {startkey : '5', endkey : '5'});
+          }).then(function (res) {
+            res.rows.should.have.length(1, 'correctly return rows');
+            res.total_rows.should.equal(8, 'correctly return total_rows');
+            return db.query(mapFun, {startkey : '5', endkey : '4', descending : true});
+          }).then(function (res) {
+            res.rows.should.have.length(2, 'correctly return rows');
+            res.total_rows.should.equal(8, 'correctly return total_rows');
+            return db.query(mapFun, {startkey : '3', endkey : '7', descending : false});
+          }).then(function (res) {
+            res.rows.should.have.length(3, 'correctly return rows');
+            res.total_rows.should.equal(8, 'correctly return total_rows');
+            return db.query(mapFun, {startkey : '7', endkey : '3', descending : true});
+          }).then(function (res) {
+            res.rows.should.have.length(3, 'correctly return rows');
+            res.total_rows.should.equal(8, 'correctly return total_rows');
+            return db.query(mapFun, {startkey : '', endkey : '0'});
+          }).then(function (res) {
+            res.rows.should.have.length(1, 'correctly return rows');
+            res.total_rows.should.equal(8, 'correctly return total_rows');
+            return db.query(mapFun, {keys : ['0', '1', '3']});
+          }).then(function (res) {
+            res.rows.should.have.length(2, 'correctly return rows');
+            res.total_rows.should.equal(8, 'correctly return total_rows');
+            return db.query(mapFun, {keys : ['0', '1', '0', '2', '1', '1']});
+          }).then(function (res) {
+            res.rows.should.have.length(6, 'correctly return rows');
+            res.rows.map(function (row) { return row.key; }).should.deep.equal(
+              ['0', '1', '0', '2', '1', '1']);
+            res.total_rows.should.equal(8, 'correctly return total_rows');
+            return db.query(mapFun, {keys : []});
+          }).then(function (res) {
+            res.rows.should.have.length(0, 'correctly return rows');
+            res.total_rows.should.equal(8, 'correctly return total_rows');
+            return db.query(mapFun, {keys : ['7']});
+          }).then(function (res) {
+            res.rows.should.have.length(0, 'correctly return rows');
+            res.total_rows.should.equal(8, 'correctly return total_rows');
+            return db.query(mapFun, {key : '3'});
+          }).then(function (res) {
+            res.rows.should.have.length(0, 'correctly return rows');
+            res.total_rows.should.equal(8, 'correctly return total_rows');
+            return db.query(mapFun, {key : '2'});
+          }).then(function (res) {
+            res.rows.should.have.length(1, 'correctly return rows');
+            res.total_rows.should.equal(8, 'correctly return total_rows');
+            return db.query(mapFun, {key : 'z'});
+          }).then(function (res) {
+            res.rows.should.have.length(0, 'correctly return rows');
+            res.total_rows.should.equal(8, 'correctly return total_rows');
+
+            return db.query(mapFun, {startkey : '5', endkey : '4'}).then(function (res) {
+              res.should.not.exist('expected error on reversed start/endkey');
+            }).catch(function (err) {
+              err.status.should.equal(400);
+              err.name.should.equal('query_parse_error');
+              err.message.should.be.a('string');
+            });
+          });
         });
-      }, done);
+      });
     });
 
     it('should query correctly with skip/limit and multiple keys/values', function () {

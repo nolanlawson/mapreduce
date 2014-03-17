@@ -185,6 +185,22 @@ function mapUsingKeys(inputResults, keys, keysLookup) {
   return outputResults;
 }
 
+function checkRangeError(options) {
+  var startkeyName = options.descending ? 'endkey' : 'startkey';
+  var endkeyName = options.descending ? 'startkey' : 'endkey';
+
+  if (typeof options[startkeyName] !== 'undefined' &&
+    typeof options[endkeyName] !== 'undefined' &&
+    collate(options[startkeyName], options[endkeyName]) > 0) {
+    return {
+      status : 400,
+      name : 'query_parse_error',
+      message : 'No rows can match your key range, reverse your ' +
+        'start_key and end_key or set {descending : true}'
+    };
+  }
+}
+
 function viewQuery(db, fun, options) {
   var origMap;
   if (!options.skip) {
@@ -195,19 +211,13 @@ function viewQuery(db, fun, options) {
     options.reduce = false;
   }
 
+  var rangeError = checkRangeError(options);
+  if (rangeError) {
+    return options.complete(rangeError);
+  }
+
   var startkeyName = options.descending ? 'endkey' : 'startkey';
   var endkeyName = options.descending ? 'startkey' : 'endkey';
-
-  if (typeof options[startkeyName] !== 'undefined' &&
-    typeof options[endkeyName] !== 'undefined' &&
-    collate(options[startkeyName], options[endkeyName]) > 0) {
-    return options.complete({
-      status : 400,
-      name : 'query_parse_error',
-      message : 'No rows can match your key range, reverse your ' +
-        'start_key and end_key or set {descending : true}'
-    });
-  }
 
   var results = [];
   var current;
@@ -611,6 +621,11 @@ function reduceIndex(index, results, options) {
 }
 
 function queryIndex(index, opts) {
+
+  var rangeError = checkRangeError(opts);
+  if (rangeError) {
+    return opts.complete(rangeError);
+  }
 
   index.dbIndex.count(function (err, count) {
     if (err) {
