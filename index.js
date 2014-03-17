@@ -599,7 +599,6 @@ function reduceIndex(index, results, options) {
     e.key = e.key[0][0];
   });
   if (error) {
-    console.log(error);
     return options.complete(error);
   }
   var skip = options.skip || 0;
@@ -613,10 +612,11 @@ function reduceIndex(index, results, options) {
 
 function queryIndex(index, opts) {
 
-  index.dbIndex.count(function (err, totalRows) {
+  index.dbIndex.count(function (err, count) {
     if (err) {
       return opts.complete(err);
     }
+    var totalRows = count - 1; // -1 for the stored 'seq' value
 
     var shouldReduce = index.reduceFun && opts.reduce !== false;
     var skip = opts.skip || 0;

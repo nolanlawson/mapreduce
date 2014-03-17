@@ -17,12 +17,49 @@ if (!dbs) {
 }
 dbs.split(',').forEach(function (db) {
   var dbType = /^http/.test(db) ? 'http' : 'local';
-  describe(dbType, function () {
-    tests(db);
+  var viewTypes = ['persisted', 'temp'];
+  viewTypes.forEach(function (viewType) {
+    describe(dbType + ' with ' + viewType + ' views:', function () {
+      tests(db, viewType);
+    });
   });
 });
 
-function tests(dbName) {
+function tests(dbName, viewType) {
+
+  var createView;
+  if (viewType === 'persisted') {
+    createView = function (db, viewObj) {
+      var storableViewObj = {
+        map : viewObj.map.toString()
+      };
+      if (viewObj.reduce) {
+        storableViewObj.reduce = viewObj.reduce.toString();
+      }
+      return new Promise(function (resolve, reject) {
+        db.put({
+          _id: '_design/theViewDoc',
+          views: {
+            'theView' : storableViewObj
+          }
+        }, function (err) {
+          if (err) {
+            reject(err);
+          }
+          resolve('theViewDoc/theView');
+        });
+      });
+    };
+  } else {
+    createView = function (db, viewObj, cb) {
+      return new Promise(function (resolve, reject) {
+        process.nextTick(function () {
+          resolve(viewObj);
+        });
+      });
+    };
+  }
+
   beforeEach(function (done) {
     new Pouch(dbName, function (err, d) {
       done();
@@ -36,29 +73,31 @@ function tests(dbName) {
   describe('views', function () {
     it("Test basic view", function () {
       return new Pouch(dbName).then(function (db) {
-        return db.bulkDocs({docs: [
-          {foo: 'bar'},
-          { _id: 'volatile', foo: 'baz' }
-        ]}).then(function () {
-          return db.get('volatile');
-        }).then(function (doc) {
-          return db.remove(doc);
-        }).then(function () {
-          return db.query({
-            map: function (doc) {
-              emit(doc.foo, doc);
-            }
-          }, {include_docs: true, reduce: false});
-        }).then(function (res) {
-          res.rows.should.have.length(1, 'Dont include deleted documents');
-          res.total_rows.should.equal(1, 'Include total_rows property.');
-          res.rows.forEach(function (x, i) {
-            should.exist(x.id);
-            should.exist(x.key);
-            should.exist(x.value);
-            should.exist(x.value._rev);
-            should.exist(x.doc);
-            should.exist(x.doc._rev);
+        return createView(db, {
+          map: function (doc) {
+            emit(doc.foo, doc);
+          }
+        }).then(function (view) {
+          return db.bulkDocs({docs: [
+            {foo: 'bar'},
+            { _id: 'volatile', foo: 'baz' }
+          ]}).then(function () {
+            return db.get('volatile');
+          }).then(function (doc) {
+            return db.remove(doc);
+          }).then(function () {
+            return db.query(view, {include_docs: true, reduce: false});
+          }).then(function (res) {
+            res.rows.should.have.length(1, 'Dont include deleted documents');
+            res.total_rows.should.equal(1, 'Include total_rows property.');
+            res.rows.forEach(function (x, i) {
+              should.exist(x.id);
+              should.exist(x.key);
+              should.exist(x.value);
+              should.exist(x.value._rev);
+              should.exist(x.doc);
+              should.exist(x.doc._rev);
+            });
           });
         });
       });
