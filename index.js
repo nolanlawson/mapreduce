@@ -185,7 +185,7 @@ function mapUsingKeys(inputResults, keys, keysLookup) {
   return outputResults;
 }
 
-function checkRangeError(options) {
+function checkQueryParseError(options, fun) {
   var startkeyName = options.descending ? 'endkey' : 'startkey';
   var endkeyName = options.descending ? 'startkey' : 'endkey';
 
@@ -198,7 +198,14 @@ function checkRangeError(options) {
       message : 'No rows can match your key range, reverse your ' +
         'start_key and end_key or set {descending : true}'
     };
+  } else if (fun.reduce && options.reduce !== false && options.include_docs) {
+    return {
+      status : 400,
+      name : 'query_parse_error',
+      message : '{include_docs:true} is invalid for reduce'
+    };
   }
+
 }
 
 function viewQuery(db, fun, options) {
@@ -209,11 +216,6 @@ function viewQuery(db, fun, options) {
 
   if (!fun.reduce) {
     options.reduce = false;
-  }
-
-  var rangeError = checkRangeError(options);
-  if (rangeError) {
-    return options.complete(rangeError);
   }
 
   var startkeyName = options.descending ? 'endkey' : 'startkey';
@@ -315,16 +317,20 @@ function viewQuery(db, fun, options) {
         });
       }
 
+      // TODO: actually implement group/group_level
+      var shouldGroup = options.group || options.group_level;
+
       var groups = [];
       results.forEach(function (e) {
         var last = groups[groups.length - 1];
-        if (last && collate(last.key[0][0], e.key) === 0) {
-          last.key.push([e.key, e.id]);
+        var key = shouldGroup ? e.key : null;
+        if (last && collate(last.key[0][0], key) === 0) {
+          last.key.push([key, e.id]);
           last.value.push(e.value);
           return;
         }
         groups.push({key: [
-          [e.key, e.id]
+          [key, e.id]
         ], value: [e.value]});
       });
       groups.forEach(function (e) {
@@ -339,9 +345,8 @@ function viewQuery(db, fun, options) {
         options.complete(error);
         return;
       }
+      // no total_rows/offset when reducing
       options.complete(null, {
-        total_rows: totalRows,
-        offset: options.skip,
         rows: ('limit' in options) ? groups.slice(options.skip, options.limit + options.skip) :
           (options.skip > 0) ? groups.slice(options.skip) : groups
       });
@@ -571,18 +576,22 @@ function reduceIndex(index, results, options) {
   // we already have the reduced output persisted in the database,
   // so we only need to rereduce
 
+  // TODO: actually implement group/group_level
+  var shouldGroup = options.group || options.group_level;
+
   var reduceFun;
 
   var groups = [];
   var error;
   results.forEach(function (e) {
     var last = groups[groups.length - 1];
-    if (last && collate(last.key[0][0], e.key) === 0) {
-      last.key.push([e.key, e.id]);
+    var key = shouldGroup ? e.key : null;
+    if (last && collate(last.key[0][0], key) === 0) {
+      last.key.push([key, e.id]);
       last.value.push(e.reduceOutput);
     } else {
       groups.push({
-        key: [[e.key, e.id]],
+        key: [[key, e.id]],
         value: [e.reduceOutput]
       });
     }
@@ -612,20 +621,14 @@ function reduceIndex(index, results, options) {
     return options.complete(error);
   }
   var skip = options.skip || 0;
+  // no total_rows/offset when reducing
   options.complete(null, {
-    total_rows: results.length,
-    offset: skip,
     rows: ('limit' in options) ? groups.slice(skip, options.limit + skip) :
       (skip > 0) ? groups.slice(skip) : groups
   });
 }
 
 function queryIndex(index, opts) {
-
-  var rangeError = checkRangeError(opts);
-  if (rangeError) {
-    return opts.complete(rangeError);
-  }
 
   index.dbIndex.count(function (err, count) {
     if (err) {
@@ -651,32 +654,36 @@ function queryIndex(index, opts) {
     function onMapResultsReady(results) {
       if (shouldReduce) {
         return reduceIndex(index, results, opts);
-      } else if (opts.include_docs && results.length) {
-        // fetch and attach documents
-        var numDocsFetched = 0;
-        results.forEach(function (viewRow) {
-          var val = viewRow.value;
-          //in this special case, join on _id (issue #106)
-          var dbId = (val && typeof val === 'object' && val._id) || viewRow.id;
-          index.db.get(dbId, function (_, joined_doc) {
-            if (joined_doc) {
-              viewRow.doc = joined_doc;
-            }
-            if (++numDocsFetched === results.length) {
-              opts.complete(null, {
-                total_rows : totalRows,
-                offset : skip,
-                rows : results
-              });
-            }
+      } else {
+        results.forEach(function (result) {
+          delete result.reduceOutput;
+        });
+        var onComplete = function () {
+          opts.complete(null, {
+            total_rows : totalRows,
+            offset : skip,
+            rows : results
           });
-        });
-      } else { // don't need the docs
-        opts.complete(null, {
-          total_rows : totalRows,
-          offset : skip,
-          rows : results
-        });
+        };
+        if (opts.include_docs && results.length) {
+          // fetch and attach documents
+          var numDocsFetched = 0;
+          results.forEach(function (viewRow) {
+            var val = viewRow.value;
+            //in this special case, join on _id (issue #106)
+            var dbId = (val && typeof val === 'object' && val._id) || viewRow.id;
+            index.db.get(dbId, function (_, joined_doc) {
+              if (joined_doc) {
+                viewRow.doc = joined_doc;
+              }
+              if (++numDocsFetched === results.length) {
+                onComplete();
+              }
+            });
+          });
+        } else { // don't need the docs
+          onComplete();
+        }
       }
     }
 
@@ -825,12 +832,17 @@ exports.query = function (fun, opts, callback) {
       return httpQuery(db, fun, opts);
     }
 
-    if (typeof fun === 'object') {
-      return viewQuery(db, fun, opts);
+    if (typeof fun === 'function') {
+      fun = {map : fun};
     }
 
-    if (typeof fun === 'function') {
-      return viewQuery(db, {map: fun}, opts);
+    var parseError = checkQueryParseError(opts, fun);
+    if (parseError) {
+      return opts.complete(parseError);
+    }
+
+    if (typeof fun !== 'string') {
+      return viewQuery(db, fun, opts);
     }
 
     var parts = fun.split('/');
@@ -842,15 +854,18 @@ exports.query = function (fun, opts, callback) {
         return;
       }
 
-      if (!doc.views[viewName]) {
+      var fun = doc.views[viewName];
+
+      if (!fun) {
         opts.complete({ name: 'not_found', message: 'missing_named_view' });
         return;
       }
+      var parseError = checkQueryParseError(opts, fun);
+      if (parseError) {
+        return opts.complete(parseError);
+      }
 
-      var mapFun = doc.views[viewName].map;
-      var reduceFun = doc.views[viewName].reduce;
-
-      getIndex(db, mapFun, reduceFun, function (err, index) {
+      getIndex(db, fun.map, fun.reduce, function (err, index) {
         if (err) {
           return opts.complete(err);
         } else if (opts.stale === 'ok' || opts.stale === 'update_after') {

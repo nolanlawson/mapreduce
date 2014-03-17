@@ -1309,5 +1309,149 @@ function tests(dbName, dbType, viewType) {
         });
       });
     });
+    it('should query correctly with no docs', function () {
+      return new Pouch(dbName).then(function (db) {
+        return createView(db, {
+          map : function (doc) {
+            emit();
+          }
+        }).then(function (queryFun) {
+          return db.query(queryFun).then(function (res) {
+            res.total_rows.should.equal(0, 'total_rows');
+            res.offset.should.equal(0);
+            res.rows.should.deep.equal([]);
+          });
+        });
+      });
+    });
+    it('should query correctly with no emits', function () {
+      return new Pouch(dbName).then(function (db) {
+        return createView(db, {
+          map : function (doc) {
+          }
+        }).then(function (queryFun) {
+          return db.bulkDocs({docs : [
+            {_id : 'foo'},
+            {_id : 'bar'}
+          ]}).then(function () {
+            return db.query(queryFun).then(function (res) {
+              res.total_rows.should.equal(0, 'total_rows');
+              res.offset.should.equal(0);
+              res.rows.should.deep.equal([]);
+            });
+          });
+        });
+      });
+    });
+    it('should correctly return results when reducing or not reducing', function () {
+      function keyValues(row) {
+        return { key: row.key, value: row.value };
+      }
+      function keys(row) {
+        return row.key;
+      }
+      function values(row) {
+        return row.value;
+      }
+      function docIds(row) {
+        return row.doc._id;
+      }
+      return new Pouch(dbName).then(function (db) {
+        return createView(db, {
+          map : function (doc) {
+            emit(doc.name);
+          },
+          reduce : '_count'
+        }).then(function (queryFun) {
+          return db.bulkDocs({docs : [
+            {name : 'foo', _id : '1'},
+            {name : 'bar', _id : '2'},
+            {name : 'foo', _id : '3'},
+            {name : 'quux', _id : '4'},
+            {name : 'foo', _id : '5'},
+            {name : 'foo', _id : '6'},
+            {name : 'foo', _id : '7'}
+
+          ]}).then(function () {
+            return db.query(queryFun);
+          }).then(function (res) {
+            Object.keys(res.rows[0]).sort().should.deep.equal(['key', 'value'],
+              'object only have 2 keys');
+            should.not.exist(res.total_rows, 'no total_rows1');
+            should.not.exist(res.offset, 'no offset1');
+            res.rows.map(keyValues).should.deep.equal([
+              {
+                key   : null,
+                value : 7
+              }
+            ]);
+            return db.query(queryFun, {group : true});
+          }).then(function (res) {
+            Object.keys(res.rows[0]).sort().should.deep.equal(['key', 'value'],
+              'object only have 2 keys');
+            should.not.exist(res.total_rows, 'no total_rows2');
+            should.not.exist(res.offset, 'no offset2');
+            res.rows.map(keyValues).should.deep.equal([
+              {
+                key : 'bar',
+                value : 1
+              },
+              {
+                key : 'foo',
+                value : 5
+              },
+              {
+                key : 'quux',
+                value : 1
+              }
+            ]);
+            return db.query(queryFun, {reduce : false});
+          }).then(function (res) {
+            Object.keys(res.rows[0]).sort().should.deep.equal(['id', 'key', 'value'],
+              'object only have 3 keys');
+            res.total_rows.should.equal(7, 'total_rows1');
+            res.offset.should.equal(0, 'offset1');
+            res.rows.map(keys).should.deep.equal([
+              'bar', 'foo', 'foo', 'foo', 'foo', 'foo', 'quux'
+            ]);
+            res.rows.map(values).should.deep.equal([
+              null, null, null, null, null, null, null
+            ]);
+            return db.query(queryFun, {reduce : false, skip : 3});
+          }).then(function (res) {
+            Object.keys(res.rows[0]).sort().should.deep.equal(['id', 'key', 'value'],
+              'object only have 3 keys');
+            res.total_rows.should.equal(7, 'total_rows2');
+            res.offset.should.equal(3, 'offset2');
+            res.rows.map(keys).should.deep.equal([
+              'foo', 'foo', 'foo', 'quux'
+            ]);
+            return db.query(queryFun, {reduce : false, include_docs : true});
+          }).then(function (res) {
+            Object.keys(res.rows[0]).sort().should.deep.equal(['doc', 'id', 'key', 'value'],
+              'object only have 4 keys');
+            res.total_rows.should.equal(7, 'total_rows3');
+            res.offset.should.equal(0, 'offset3');
+            res.rows.map(keys).should.deep.equal([
+              'bar', 'foo', 'foo', 'foo', 'foo', 'foo', 'quux'
+            ]);
+            res.rows.map(values).should.deep.equal([
+              null, null, null, null, null, null, null
+            ]);
+            res.rows.map(docIds).should.deep.equal([
+              '2', '1', '3', '5', '6', '7', '4'
+            ]);
+            return db.query(queryFun, {include_docs : true}).then(function (res) {
+              should.not.exist(res);
+            }).catch(function (err) {
+              err.status.should.equal(400);
+              err.name.should.equal('query_parse_error');
+              err.message.should.be.a('string');
+              // include_docs is invalid for reduce
+            });
+          });
+        });
+      });
+    });
   });
 }
