@@ -899,8 +899,8 @@ exports.query = function (fun, opts, callback) {
 
 function Index(db, mapFun, reduceFun) {
   this.db = db;
-  this.dbIndex = db.index('mrview-' + hexHashCode(
-    mapFun.toString() + (reduceFun && reduceFun.toString())));
+  this.name = 'mrview-' + hexHashCode(mapFun.toString() + (reduceFun && reduceFun.toString()));
+  this.dbIndex = db.index(this.name);
   this.mapFun = mapFun;
   this.reduceFun = reduceFun;
 }
