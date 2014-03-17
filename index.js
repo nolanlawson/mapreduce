@@ -738,8 +738,15 @@ function queryIndex(index, opts) {
         indexOpts.endkey = opts.descending ? absoluteStart : absoluteEnd;
       }
       if (typeof opts.key !== 'undefined') {
-        indexOpts.startkey = toIndexableString([INDEX_TYPE_KEYVALUE, opts.key]);
-        indexOpts.endkey = toIndexableString([INDEX_TYPE_KEYVALUE, opts.key, {}]);
+        var keyStart = toIndexableString([INDEX_TYPE_KEYVALUE, opts.key]);
+        var keyEnd = toIndexableString([INDEX_TYPE_KEYVALUE, opts.key, {}]);
+        if (indexOpts.descending) {
+          indexOpts.endkey = keyStart;
+          indexOpts.startkey = keyEnd;
+        } else {
+          indexOpts.startkey = keyStart;
+          indexOpts.endkey = keyEnd;
+        }
       }
 
       if (!shouldReduce) {
