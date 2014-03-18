@@ -430,9 +430,12 @@ function httpQuery(db, fun, opts) {
 
 function updateIndexSeq(index, seq, cb) {
   var seqKey = toIndexableString([INDEX_TYPE_SEQ, 'seq']);
-  var keyValues = {};
-  keyValues[seqKey] = seq;
-  index.dbIndex.put('_local/seq', keyValues, function (err) {
+  var docs = {
+    _id : seqKey,
+    seq : seq,
+    __pouch_group_id : '_local/seq'
+  };
+  index.db.bulkDocs({docs : [docs]}, {__pouch_group_id : '_local/seq'}, function (err) {
     if (err) {
       return cb(err);
     }
@@ -441,15 +444,35 @@ function updateIndexSeq(index, seq, cb) {
   });
 }
 
-function getIndex(db, mapFun, reduceFun, cb) {
-  var index = new Index(db, mapFun, reduceFun);
-  var seqKey = toIndexableString([INDEX_TYPE_SEQ, 'seq']);
-  index.dbIndex.get(seqKey, function (err, res) {
+function getIndex(sourceDB, mapFun, reduceFun, cb) {
+
+  sourceDB.info(function (err, info) {
     if (err) {
       return cb(err);
     }
-    index.seq = res[0] ? res[0].value : 0;
-    cb(null, index);
+    var name = info.db_name + '-mrview-' + hexHashCode(mapFun.toString() +
+      (reduceFun && reduceFun.toString()));
+
+    new PouchDB(this.name, {adapter : sourceDB.adapter}, function (err, db) {
+      if (err) {
+        return cb(err);
+      }
+      var index = {
+        name : name,
+        sourceDB : sourceDB,
+        db : db,
+        mapFun : mapFun,
+        reduceFun : reduceFun
+      };
+      var seqKey = toIndexableString([INDEX_TYPE_SEQ, 'seq']);
+      index.db.get(seqKey, function (err, res) {
+        if (err && err.name !== 'not_found') {
+          return cb(err);
+        }
+        index.seq = res && res.seq ? res.seq : 0;
+        cb(null, index);
+      });
+    });
   });
 }
 
@@ -499,7 +522,17 @@ function updateIndexInner(index, cb) {
       keyValues[indexableKey] = keyValue;
     });
 
-    index.dbIndex.put(docId, keyValues, function (err) {
+    var docs = Object.map(Object.keys(indexableKeysToKeyValues, function (key) {
+      var value = indexableKeysToKeyValues[key];
+      return {
+        _id : key,
+        value : value,
+        __pouch_group_id : docId
+      };
+    }));
+
+
+    index.db.bulkDocs({docs : docs}, {__pouch_group_id : docId}, function (err) {
       if (err) {
         return cb(err);
       }
@@ -508,7 +541,7 @@ function updateIndexInner(index, cb) {
   }
 
   function removeMappings(docId, cb) {
-    index.dbIndex.put(docId, {}, function (err) {
+    index.db.bulkDocs({docs : []}, {__pouch_group_id : docId}, function (err) {
       if (err) {
         return cb(err);
       }
@@ -538,7 +571,7 @@ function updateIndexInner(index, cb) {
     }
   };
 
-  index.db.changes({
+  index.sourceDB.changes({
     conflicts: true,
     include_docs: true,
     since : index.seq,
@@ -630,23 +663,23 @@ function reduceIndex(index, results, options) {
 
 function queryIndex(index, opts) {
 
-  index.dbIndex.count(function (err, count) {
+  index.db.allDocs({limit : 0}, function (err, res) {
     if (err) {
       return opts.complete(err);
     }
-    var totalRows = Math.max(0, count - 1); // -1 for the stored 'seq' value
+    var totalRows = Math.max(0, res.total_rows - 1); // -1 for the stored 'seq' value
 
     var shouldReduce = index.reduceFun && opts.reduce !== false;
     var skip = opts.skip || 0;
 
     function fetchFromIndex(indexOpts, cb) {
-      index.dbIndex.get(indexOpts, function (err, results) {
-        results = results.map(function (result) {
-          return result.value;
-        });
+      index.db.allDocs(indexOpts, function (err, res) {
         if (err) {
           return cb(err);
         }
+        results = res.rows.map(function (result) {
+          return result.value;
+        });
         cb(null, results);
       });
     }
@@ -672,7 +705,7 @@ function queryIndex(index, opts) {
             var val = viewRow.value;
             //in this special case, join on _id (issue #106)
             var dbId = (val && typeof val === 'object' && val._id) || viewRow.id;
-            index.db.get(dbId, function (_, joined_doc) {
+            index.sourceDB.get(dbId, function (_, joined_doc) {
               if (joined_doc) {
                 viewRow.doc = joined_doc;
               }
@@ -896,14 +929,6 @@ exports.query = function (fun, opts, callback) {
   }
   return promise;
 };
-
-function Index(db, mapFun, reduceFun) {
-  this.db = db;
-  this.name = 'mrview-' + hexHashCode(mapFun.toString() + (reduceFun && reduceFun.toString()));
-  this.dbIndex = db.index(this.name);
-  this.mapFun = mapFun;
-  this.reduceFun = reduceFun;
-}
 
 function QueryParseError(message) {
   this.status = 400;
