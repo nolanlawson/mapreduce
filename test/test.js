@@ -72,6 +72,7 @@ function tests(dbName, dbType, viewType) {
     });
   });
   afterEach(function (done) {
+    Mapreduce.deleteAllIndexes();
     Pouch.destroy(dbName, function () {
       done();
     });

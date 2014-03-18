@@ -16,6 +16,7 @@ var INDEX_TYPE_DOC = '2';
 var INDEX_TYPE_KEYVALUE = '3';
 var INDEX_TYPE_OUT_OF_BOUNDS = '4';
 
+var allIndexes = [];
 var updateIndexQueue = new TaskQueue();
 updateIndexQueue.registerTask('updateIndex', updateIndexInner);
 
@@ -444,8 +445,8 @@ function updateIndexSeq(index, seq, cb) {
     }
     doc.seq = seq;
     index.db.post(doc, function (err) {
-      console.log('got error 4: ' + err);
       if (err) {
+        console.log('got error 4: ' + err);
         return cb(err);
       }
       cb(null);
@@ -458,6 +459,7 @@ function getIndex(db, mapFun, reduceFun, cb) {
     if (err) {
       return cb(err);
     }
+    allIndexes.push(index);
     var seqKey = toIndexableString([INDEX_TYPE_METADATA, 'seq']);
     index.db.get(seqKey, function (err, doc) {
       if (err) {
@@ -486,7 +488,8 @@ function createKeyValues(doc, index) {
 
   var i = 0;
   var emit = function (key, value) {
-    var indexableStringKey = toIndexableString([INDEX_TYPE_KEYVALUE, key, docId, value, i++]);
+    var indexableStringKey = toIndexableString([INDEX_TYPE_KEYVALUE,
+      [key, docId, value, i++]]);
     indexableKeysToKeyValues[indexableStringKey] = {
       id  : docId,
       key : normalizeKey(key),
@@ -521,9 +524,14 @@ function createKeyValues(doc, index) {
 }
 
 function callMapFun(index, docMetadata, cb) {
+  console.log('callMapFun');
+  console.log('trying to dreate keyValues');
+  var keyValues = 'deleted' in docMetadata ? {} :
+    createKeyValues(docMetadata.doc, index);
+  console.log('created keyValues');
+  console.log(keyValues);
 
-  var keyValues = 'deleted' in docMetadata ?
-    createKeyValues(docMetadata.doc, index) : {};
+
 
   var docId = docMetadata.doc._id;
 
@@ -553,6 +561,7 @@ function callMapFun(index, docMetadata, cb) {
     }
     function insertKeyValues() {
       console.log('insertKeyValues : ' + JSON.stringify(keyValues));
+
       var numKvs = Object.keys(keyValues).length;
       if (numKvs === 0) {
         onKeyValuesInserted();
@@ -561,9 +570,14 @@ function callMapFun(index, docMetadata, cb) {
         var numKvsInserted = 0;
         var gotError;
         Object.keys(keyValues).forEach(function (key) {
+          var value = keyValues[key];
+          console.log('key is');
+          console.log(key);
+          console.log('value is');
+          console.log(value);
           var indexableDoc = {
             _id : toIndexableString([INDEX_TYPE_KEYVALUE, key]),
-            value : keyValues[key]
+            value : value
           };
           index.db.put(indexableDoc, function (err) {
             console.log('got error 1: ' + err);
@@ -629,6 +643,8 @@ function updateIndexInner(index, cb) {
   var numStarted = 0;
   var numFinished = 0;
   function checkComplete() {
+    console.log('checkComplete(): ' + complete + ' ' +
+      numStarted + ' ' + numFinished);
     if (complete && numStarted === numFinished) {
       updateIndexSeq(index, lastSeq, function (err) {
         console.log('updateIndexInner done');
@@ -663,16 +679,19 @@ function updateIndexInner(index, cb) {
     });
   }
 
+  console.log('changes');
   index.sourceDB.changes({
     conflicts: true,
     include_docs: true,
     since : index.seq,
     onChange: function (doc) {
+      console.log('onChange() called');
       numStarted++;
       changesTaskQueue.addTask('onChange', [doc, checkComplete]);
       changesTaskQueue.execute();
     },
     complete: function () {
+      console.log('complete() called');
       complete = true;
       checkComplete();
     }
@@ -747,6 +766,8 @@ function queryIndex(index, opts) {
     }
     var totalRows = res.total_rows - res.rows.length;
 
+    console.log('totalRows is ' + totalRows);
+
     var shouldReduce = index.reduceFun && opts.reduce !== false;
     var skip = opts.skip || 0;
 
@@ -757,7 +778,7 @@ function queryIndex(index, opts) {
         if (err) {
           return cb(err);
         }
-        console.log('got rows: ' + res);
+        console.log('got res: ' + JSON.stringify(res));
         var rows = res.rows.map(function (result) {
           return result.doc.value;
         });
@@ -902,6 +923,12 @@ function queryIndex(index, opts) {
   });
 }
 
+exports.deleteAllIndexes = function () {
+  allIndexes.forEach(function (index) {
+    index.db.destroy();
+  });
+};
+
 exports.query = function (fun, opts, callback) {
   var db = this;
   if (typeof opts === 'function') {
@@ -1021,7 +1048,7 @@ function Index(sourceDB, mapFun, reduceFun, callback) {
     if (err) {
       return callback(err);
     }
-    self.name = info.doc_name + '-mrview-' + hexHashCode(mapFun.toString() +
+    self.name = info.db_name + '-mrview-' + hexHashCode(mapFun.toString() +
       (reduceFun && reduceFun.toString()));
     new PouchDB(self.name, {adapter : sourceDB.adapter}, function (err, db) {
       if (err) {
