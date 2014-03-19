@@ -642,7 +642,7 @@ function updateIndexInner(index, ultimateCB) {
   });
 }
 
-function reduceIndex(index, results, options) {
+function reduceIndex(index, results, options, cb) {
   // we already have the reduced output persisted in the database,
   // so we only need to rereduce
 
@@ -688,11 +688,11 @@ function reduceIndex(index, results, options) {
     e.key = e.key[0][0];
   });
   if (error) {
-    return options.complete(error);
+    return cb(error);
   }
   var skip = options.skip || 0;
   // no total_rows/offset when reducing
-  options.complete(null, {
+  cb(null, {
     rows: ('limit' in options) ? groups.slice(skip, options.limit + skip) :
       (skip > 0) ? groups.slice(skip) : groups
   });
@@ -720,16 +720,13 @@ function queryIndex(index, opts, cb) {
         results = res.rows.map(function (result) {
           return result.doc.value;
         });
-        if (err) {
-          return cb(err);
-        }
         cb(null, results);
       });
     }
 
     function onMapResultsReady(results) {
       if (shouldReduce) {
-        return reduceIndex(index, results, opts);
+        return reduceIndex(index, results, opts, cb);
       } else {
         results.forEach(function (result) {
           delete result.reduceOutput;
@@ -1007,11 +1004,9 @@ exports.query = function (fun, opts, callback) {
             if (err) {
               return opts.complete(err);
             }
-            /*
+
             updateIndexQueue.addTask('queryIndex', [index, opts, opts.complete]);
             updateIndexQueue.execute();
-            */
-            queryIndex(index, opts, opts.complete);
           });
         }
       });
