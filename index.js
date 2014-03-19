@@ -535,13 +535,15 @@ function updateIndexInner(index, ultimateCB) {
           if (err) {
             return cb(err);
           }
-          var kvDocs = res.rows.filter(function (row) {
-            return row.doc || {_id : row.key};
+          var kvDocs = res.rows.map(function (row) {
+            return row.doc;
+          }).filter(function (row) {
+            return row;
           });
 
-          var oldKeys = {};
+          var oldKeysMap = {};
           kvDocs.forEach(function (kvDoc) {
-            oldKeys[kvDoc._id] = true;
+            oldKeysMap[kvDoc._id] = true;
             kvDoc._deleted = !indexableKeysToKeyValues[kvDoc._id];
             if (!kvDoc._deleted) {
               kvDoc.value = indexableKeysToKeyValues[kvDoc._id];
@@ -550,7 +552,7 @@ function updateIndexInner(index, ultimateCB) {
 
           var newKeys = Object.keys(indexableKeysToKeyValues);
           newKeys.forEach(function (key) {
-            if (!oldKeys[key]) {
+            if (!oldKeysMap[key]) {
               // new doc
               kvDocs.push({
                 _id : key,
@@ -558,7 +560,7 @@ function updateIndexInner(index, ultimateCB) {
               });
             }
           });
-          metaDoc.keys = uniq(newKeys.concat(oldKeys));
+          metaDoc.keys = uniq(newKeys.concat(metaDoc.keys));
           kvDocs.push(metaDoc);
 
           lastSeqDoc.seq = seq;
