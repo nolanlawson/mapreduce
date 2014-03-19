@@ -72,8 +72,10 @@ function tests(dbName, dbType, viewType) {
     });
   });
   afterEach(function (done) {
-    Pouch.destroy(dbName, function () {
-      return Mapreduce.removeIndex('theViewDoc/theView');
+    return new Pouch(dbName).then(function (db) {
+      return db.removeIndex('theViewDoc/theView');
+    }).then(function () {
+      return Pouch.destroy(dbName);
     });
   });
   describe('views', function () {
