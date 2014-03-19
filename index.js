@@ -16,8 +16,6 @@ updateIndexQueue.registerTask('updateIndex', updateIndexInner);
 updateIndexQueue.registerTask('destroy', PouchDB.destroy);
 updateIndexQueue.registerTask('queryIndex', queryIndex);
 
-var indexes = {};
-
 var processKey = function (key) {
   // Stringify keys since we want them as map keys (see #35)
   return JSON.stringify(normalizeKey(key));
@@ -436,9 +434,6 @@ function getIndex(sourceDB, mapFun, reduceFun, cb) {
     }
     var name = info.db_name + '-mrview-' + hexHashCode(mapFun.toString() +
         (reduceFun && reduceFun.toString()));
-    if (indexes[name]) {
-      return cb(indexes[name]);
-    }
     new PouchDB(name, {adapter : sourceDB.adapter}, function (err, db) {
       if (err) {
         return cb(err);
@@ -843,7 +838,6 @@ function queryIndex(index, opts, cb) {
 }
 
 exports.removeIndex = function (fun, callback) {
-  console.log('remove index');
   var db = this;
   var realCB;
   if (callback) {
@@ -877,15 +871,17 @@ exports.removeIndex = function (fun, callback) {
       var parts = fun.split('/');
       var designDocName = parts[0];
       var viewName = parts[1];
+
       db.get('_design/' + designDocName, function (err, doc) {
+        console.log(err);
         if (err) {
           return reject(err);
         }
         fun = doc.views[viewName];
         remove();
       });
+
     } else {
-      console.log('remove!');
       remove();
     }
   });

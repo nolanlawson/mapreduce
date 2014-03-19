@@ -20,6 +20,7 @@ dbs.split(',').forEach(function (db) {
   var viewTypes = ['persisted', 'temp'];
   viewTypes.forEach(function (viewType) {
     describe(dbType + ' with ' + viewType + ' views:', function () {
+      this.timeout(30000);
       tests(db, dbType, viewType);
     });
   });
@@ -34,8 +35,10 @@ function setTimeoutPromise(time) {
 function tests(dbName, dbType, viewType) {
 
   var createView;
+  var createdViews;
   if (viewType === 'persisted') {
     createView = function (db, viewObj) {
+      createdViews.push(viewObj);
       var storableViewObj = {
         map : viewObj.map.toString()
       };
@@ -58,6 +61,7 @@ function tests(dbName, dbType, viewType) {
     };
   } else {
     createView = function (db, viewObj, cb) {
+      createdViews.push(viewObj);
       return new Promise(function (resolve, reject) {
         process.nextTick(function () {
           resolve(viewObj);
@@ -67,13 +71,26 @@ function tests(dbName, dbType, viewType) {
   }
 
   beforeEach(function (done) {
+    createdViews = [];
     new Pouch(dbName, function (err, d) {
       done();
     });
   });
   afterEach(function (done) {
-    new Pouch(dbName).then(function (db) {
-      db.removeIndex('theViewDoc/theView');
+    var db;
+    new Pouch(dbName).then(function (thisDB) {
+      db = thisDB;
+      db.removeIndex(createdViews[0]);
+    }).then(function () {
+      if (createdViews[1]) {
+        return db.removeIndex(createdViews[1]);
+      }
+      return function () {};
+    }).then(function () {
+      if (createdViews[2]) {
+        return db.removeIndex(createdViews[2]);
+      }
+      return function () {};
     }).then(function () {
       return Pouch.destroy(dbName);
     }).then(function () {
