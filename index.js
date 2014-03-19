@@ -13,8 +13,8 @@ var log = (typeof console !== 'undefined') ?
 
 var updateIndexQueue = new TaskQueue();
 updateIndexQueue.registerTask('updateIndex', updateIndexInner);
+updateIndexQueue.registerTask('queryIndex', queryIndexInner);
 updateIndexQueue.registerTask('destroy', PouchDB.destroy);
-updateIndexQueue.registerTask('queryIndex', queryIndex);
 
 var processKey = function (key) {
   // Stringify keys since we want them as map keys (see #35)
@@ -444,21 +444,13 @@ function getIndex(sourceDB, mapFun, reduceFun, cb) {
           if (err.name !== 'not_found') {
             return cb(err);
           } else {
-            lastSeqDoc = {_id : '_local/lastSeq', seq : 0};
-
-            index.db.put(lastSeqDoc, function (err) {
-              if (err) {
-                return cb(err);
-              }
-              index.seq = 0;
-              cb(null, index);
-            });
+            index.seq = 0;
           }
         } else {
           index.seq = lastSeqDoc.seq;
         }
+        cb(null, index);
       });
-      cb(null, index);
     });
   });
 }
@@ -511,7 +503,14 @@ function updateIndexInner(index, ultimateCB) {
 
     index.db.get('_local/lastSeq', function (err, lastSeqDoc) {
       if (err) {
-        return cb(err);
+        if (err.name !== 'not_found') {
+          return cb(err);
+        } else {
+          lastSeqDoc = {
+            _id : '_local/lastSeq',
+            seq : 0
+          };
+        }
       }
 
       index.db.get('_local/doc_' + docId, function (err, metaDoc) {
@@ -683,7 +682,13 @@ function reduceIndex(index, results, options, cb) {
   });
 }
 
+
 function queryIndex(index, opts, cb) {
+  updateIndexQueue.addTask('queryIndex', [index, opts, opts.complete]);
+  updateIndexQueue.execute();
+}
+
+function queryIndexInner(index, opts, cb) {
 
   index.db.allDocs({limit : 0}, function (err, totalRowsRes) {
     if (err) {
@@ -982,15 +987,13 @@ exports.query = function (fun, opts, callback) {
               }
             });
           }
-          return queryIndex(index, opts);
+          queryIndex(index, opts, opts.complete);
         } else { // stale not ok
           return updateIndex(index, function (err) {
             if (err) {
               return opts.complete(err);
             }
-
-            updateIndexQueue.addTask('queryIndex', [index, opts, opts.complete]);
-            updateIndexQueue.execute();
+            queryIndex(index, opts, opts.complete);
           });
         }
       });
