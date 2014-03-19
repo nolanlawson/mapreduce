@@ -1,5 +1,6 @@
 'use strict';
 
+var PouchDB = require('pouchdb');
 var pouchCollate = require('pouchdb-collate');
 var Promise = typeof global.Promise === 'function' ? global.Promise : require('lie');
 var TaskQueue = require('./taskqueue');
@@ -662,151 +663,158 @@ function reduceIndex(index, results, options) {
 
 function queryIndex(index, opts) {
 
-  var shouldReduce = index.reduceFun && opts.reduce !== false;
-  var skip = opts.skip || 0;
-
-  function fetchFromIndex(indexOpts, cb) {
-    index.db.allDocs(indexOpts, function (err, res) {
-      if (err) {
-        return cb(err);
-      }
-      results = res.rows.map(function (result) {
-        return result.value;
-      });
-      if (err) {
-        return cb(err);
-      }
-      cb(null, results);
-    });
-  }
-
-  function onMapResultsReady(results) {
-    if (shouldReduce) {
-      return reduceIndex(index, results, opts);
-    } else {
-      results.forEach(function (result) {
-        delete result.reduceOutput;
-      });
-      var onComplete = function () {
-        opts.complete(null, {
-          total_rows : res.total_rows,
-          offset : skip,
-          rows : results
-        });
-      };
-      if (opts.include_docs && results.length) {
-        // fetch and attach documents
-        var numDocsFetched = 0;
-        results.forEach(function (viewRow) {
-          var val = viewRow.value;
-          //in this special case, join on _id (issue #106)
-          var dbId = (val && typeof val === 'object' && val._id) || viewRow.id;
-          index.db.get(dbId, function (_, joined_doc) {
-            if (joined_doc) {
-              viewRow.doc = joined_doc;
-            }
-            if (++numDocsFetched === results.length) {
-              onComplete();
-            }
-          });
-        });
-      } else { // don't need the docs
-        onComplete();
-      }
+  index.db.allDocs({limit : 0}, function (err, totalRowsRes) {
+    if (err) {
+      return opts.complete(err);
     }
-  }
+    var totalRows = totalRowsRes.total_rows;
 
-  if ('keys' in opts) {
-    if (!opts.keys.length) {
-      return opts.complete(null, {
-        total_rows : res.total_rows,
-        offset : skip,
-        rows : []
-      });
-    }
-    var keysLookup = createKeysLookup(opts.keys);
-    var keysLookupLen = Object.keys(keysLookup).length;
-    var results = new Array(opts.keys.length);
-    var numKeysFetched = 0;
-    var keysError;
-    Object.keys(keysLookup).forEach(function (key) {
-      var keysLookupIndices = keysLookup[key];
-      var trueKey = JSON.parse(key);
-      var indexOpts = {};
-      indexOpts.startkey = toIndexableString([INDEX_TYPE_KEYVALUE, trueKey]);
-      indexOpts.endkey = toIndexableString([INDEX_TYPE_KEYVALUE, trueKey, {}]);
-      fetchFromIndex(indexOpts, function (err, subResults) {
+    var shouldReduce = index.reduceFun && opts.reduce !== false;
+    var skip = opts.skip || 0;
+
+    function fetchFromIndex(indexOpts, cb) {
+      index.db.allDocs(indexOpts, function (err, res) {
         if (err) {
-          keysError = true;
-          return opts.complete(err);
-        } else if (keysError) {
-          return;
-        } else if (typeof keysLookupIndices === 'number') {
-          results[keysLookupIndices] = subResults;
-        } else { // array of indices
-          keysLookupIndices.forEach(function (i) {
-            results[i] = subResults;
-          });
+          return cb(err);
         }
-        if (++numKeysFetched === keysLookupLen) {
-          // combine results
-          var combinedResults = [];
-          results.forEach(function (result) {
-            combinedResults = combinedResults.concat(result);
-          });
-
-          if (!shouldReduce) {
-            // since we couldn't skip/limit before, do so now
-            combinedResults = ('limit' in opts) ?
-              combinedResults.slice(skip, opts.limit + skip) :
-              (skip > 0) ? combinedResults.slice(skip) : combinedResults;
-          }
-          onMapResultsReady(combinedResults);
+        results = res.rows.map(function (result) {
+          return result.value;
+        });
+        if (err) {
+          return cb(err);
         }
+        cb(null, results);
       });
-    });
-  } else { // normal query, no 'keys'
-
-    var indexOpts = {};
-
-    // don't include the seq, which we stored alongside these
-    indexOpts.descending = opts.descending;
-    if (typeof opts.startkey !== 'undefined') {
-      indexOpts.startkey = opts.descending ?
-        toIndexableString([opts.startkey, {}]) :
-        toIndexableString([opts.startkey]);
     }
-    if (typeof opts.endkey !== 'undefined') {
-      indexOpts.endkey = opts.descending ?
-        toIndexableString([opts.endkey]) :
-        toIndexableString([opts.endkey, {}]);
-    }
-    if (typeof opts.key !== 'undefined') {
-      var keyStart = toIndexableString([opts.key]);
-      var keyEnd = toIndexableString([opts.key, {}]);
-      if (indexOpts.descending) {
-        indexOpts.endkey = keyStart;
-        indexOpts.startkey = keyEnd;
+
+    function onMapResultsReady(results) {
+      if (shouldReduce) {
+        return reduceIndex(index, results, opts);
       } else {
-        indexOpts.startkey = keyStart;
-        indexOpts.endkey = keyEnd;
+        results.forEach(function (result) {
+          delete result.reduceOutput;
+        });
+        var onComplete = function () {
+          opts.complete(null, {
+            total_rows : totalRows,
+            offset : skip,
+            rows : results
+          });
+        };
+        if (opts.include_docs && results.length) {
+          // fetch and attach documents
+          var numDocsFetched = 0;
+          results.forEach(function (viewRow) {
+            var val = viewRow.value;
+            //in this special case, join on _id (issue #106)
+            var dbId = (val && typeof val === 'object' && val._id) || viewRow.id;
+            index.db.get(dbId, function (_, joined_doc) {
+              if (joined_doc) {
+                viewRow.doc = joined_doc;
+              }
+              if (++numDocsFetched === results.length) {
+                onComplete();
+              }
+            });
+          });
+        } else { // don't need the docs
+          onComplete();
+        }
       }
     }
 
-    if (!shouldReduce) {
-      if (typeof opts.limit === 'number') {
-        indexOpts.limit = opts.limit;
+    if ('keys' in opts) {
+      if (!opts.keys.length) {
+        return opts.complete(null, {
+          total_rows : totalRows,
+          offset : skip,
+          rows : []
+        });
       }
-      indexOpts.skip = skip;
-    }
+      var keysLookup = createKeysLookup(opts.keys);
+      var keysLookupLen = Object.keys(keysLookup).length;
+      var results = new Array(opts.keys.length);
+      var numKeysFetched = 0;
+      var keysError;
+      Object.keys(keysLookup).forEach(function (key) {
+        var keysLookupIndices = keysLookup[key];
+        var trueKey = JSON.parse(key);
+        var indexOpts = {};
+        indexOpts.startkey = toIndexableString([trueKey]);
+        indexOpts.endkey = toIndexableString([trueKey, {}]);
+        fetchFromIndex(indexOpts, function (err, subResults) {
+          if (err) {
+            keysError = true;
+            return opts.complete(err);
+          } else if (keysError) {
+            return;
+          } else if (typeof keysLookupIndices === 'number') {
+            results[keysLookupIndices] = subResults;
+          } else { // array of indices
+            keysLookupIndices.forEach(function (i) {
+              results[i] = subResults;
+            });
+          }
+          if (++numKeysFetched === keysLookupLen) {
+            // combine results
+            var combinedResults = [];
+            results.forEach(function (result) {
+              combinedResults = combinedResults.concat(result);
+            });
 
-    fetchFromIndex(indexOpts, function (err, results) {
-      if (err) {
-        return opts.complete(err);
+            if (!shouldReduce) {
+              // since we couldn't skip/limit before, do so now
+              combinedResults = ('limit' in opts) ?
+                combinedResults.slice(skip, opts.limit + skip) :
+                (skip > 0) ? combinedResults.slice(skip) : combinedResults;
+            }
+            onMapResultsReady(combinedResults);
+          }
+        });
+      });
+    } else { // normal query, no 'keys'
+
+      var indexOpts = {};
+
+      // don't include the seq, which we stored alongside these
+      indexOpts.descending = opts.descending;
+      if (typeof opts.startkey !== 'undefined') {
+        indexOpts.startkey = opts.descending ?
+          toIndexableString([opts.startkey, {}]) :
+          toIndexableString([opts.startkey]);
       }
-      onMapResultsReady(results);
-    });
-  }
+      if (typeof opts.endkey !== 'undefined') {
+        indexOpts.endkey = opts.descending ?
+          toIndexableString([opts.endkey]) :
+          toIndexableString([opts.endkey, {}]);
+      }
+      if (typeof opts.key !== 'undefined') {
+        var keyStart = toIndexableString([opts.key]);
+        var keyEnd = toIndexableString([opts.key, {}]);
+        if (indexOpts.descending) {
+          indexOpts.endkey = keyStart;
+          indexOpts.startkey = keyEnd;
+        } else {
+          indexOpts.startkey = keyStart;
+          indexOpts.endkey = keyEnd;
+        }
+      }
+
+      if (!shouldReduce) {
+        if (typeof opts.limit === 'number') {
+          indexOpts.limit = opts.limit;
+        }
+        indexOpts.skip = skip;
+      }
+
+      fetchFromIndex(indexOpts, function (err, results) {
+        if (err) {
+          return opts.complete(err);
+        }
+        onMapResultsReady(results);
+      });
+    }
+  });
 }
 
 exports.removeIndex = function (fun, callback) {
