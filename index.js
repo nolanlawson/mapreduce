@@ -700,7 +700,7 @@ function queryIndex(index, opts, cb) {
         if (err) {
           return cb(err);
         }
-        results = res.rows.map(function (result) {
+        var results = res.rows.map(function (result) {
           return result.doc.value;
         });
         cb(null, results);
@@ -873,7 +873,6 @@ exports.removeIndex = function (fun, callback) {
       var viewName = parts[1];
 
       db.get('_design/' + designDocName, function (err, doc) {
-        console.log(err);
         if (err) {
           return reject(err);
         }
