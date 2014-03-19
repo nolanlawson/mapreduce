@@ -20,7 +20,6 @@ dbs.split(',').forEach(function (db) {
   var viewTypes = ['persisted', 'temp'];
   viewTypes.forEach(function (viewType) {
     describe(dbType + ' with ' + viewType + ' views:', function () {
-      this.timeout(120000);
       tests(db, dbType, viewType);
     });
   });
