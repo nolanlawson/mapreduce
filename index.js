@@ -10,7 +10,7 @@ var normalizeKey = pouchCollate.normalizeKey;
 var evalFunc = require('./evalfunc');
 var log = (typeof console !== 'undefined') ?
   Function.prototype.bind.call(console.log, console) : function () {};
-
+var utils = require('./utils');
 var updateIndexQueue = new TaskQueue();
 updateIndexQueue.registerTask('updateIndex', updateIndexInner);
 updateIndexQueue.registerTask('queryIndex', queryIndexInner);
@@ -21,15 +21,7 @@ var processKey = function (key) {
   return JSON.stringify(normalizeKey(key));
 };
 
-function uniq(arr) {
-  var map = {};
-  arr.forEach(function (element) {
-    map[element] = true;
-  });
-  return Object.keys(map);
-}
-
-// similar to java's hashCode function, converted to a hex string
+// similar to java's hashCode function, except outputs a hex string
 function hexHashCode(str) {
   var hash = 0;
   for (var i = 0, len = str.length; i < len; i++) {
@@ -560,7 +552,7 @@ function updateIndexInner(index, ultimateCB) {
               });
             }
           });
-          metaDoc.keys = uniq(newKeys.concat(metaDoc.keys));
+          metaDoc.keys = utils.uniq(newKeys.concat(metaDoc.keys));
           kvDocs.push(metaDoc);
 
           lastSeqDoc.seq = seq;
@@ -702,156 +694,148 @@ function queryIndex(index, opts, cb) {
 
 function queryIndexInner(index, opts, cb) {
 
-  index.db.allDocs({limit : 0}, function (err, totalRowsRes) {
-    if (err) {
-      return cb(err);
-    }
-    var totalRows = totalRowsRes.total_rows;
+  var totalRows;
+  var shouldReduce = index.reduceFun && opts.reduce !== false;
+  var skip = opts.skip || 0;
+  if (typeof opts.keys !== 'undefined' && !opts.keys.length) {
+    opts.limit = 0;
+    delete opts.keys;
+  }
 
-    var shouldReduce = index.reduceFun && opts.reduce !== false;
-    var skip = opts.skip || 0;
-
-    function fetchFromIndex(indexOpts, cb) {
-      indexOpts.include_docs = true;
-      index.db.allDocs(indexOpts, function (err, res) {
-        if (err) {
-          return cb(err);
-        }
-        var results = res.rows.map(function (result) {
-          return result.doc.value;
-        });
-        cb(null, results);
-      });
-    }
-
-    function onMapResultsReady(results) {
-      if (shouldReduce) {
-        return reduceIndex(index, results, opts, cb);
-      } else {
-        results.forEach(function (result) {
-          delete result.reduceOutput;
-        });
-        var onComplete = function () {
-          cb(null, {
-            total_rows : totalRows,
-            offset : skip,
-            rows : results
-          });
-        };
-        if (opts.include_docs && results.length) {
-          // fetch and attach documents
-          var numDocsFetched = 0;
-          results.forEach(function (viewRow) {
-            var val = viewRow.value;
-            //in this special case, join on _id (issue #106)
-            var dbId = (val && typeof val === 'object' && val._id) || viewRow.id;
-            index.sourceDB.get(dbId, function (_, joined_doc) {
-              if (joined_doc) {
-                viewRow.doc = joined_doc;
-              }
-              if (++numDocsFetched === results.length) {
-                onComplete();
-              }
-            });
-          });
-        } else { // don't need the docs
-          onComplete();
-        }
+  function fetchFromIndex(indexOpts, cb) {
+    indexOpts.include_docs = true;
+    index.db.allDocs(indexOpts, function (err, res) {
+      if (err) {
+        return cb(err);
       }
-    }
+      totalRows = res.total_rows;
+      var resultValues = res.rows.map(function (result) {
+        return result.doc.value;
+      });
+      cb(null, resultValues);
+    });
+  }
 
-    if ('keys' in opts) {
-      if (!opts.keys.length) {
-        return cb(null, {
+  function onMapResultsReady(results) {
+    if (shouldReduce) {
+      return reduceIndex(index, results, opts, cb);
+    } else {
+      results.forEach(function (result) {
+        delete result.reduceOutput;
+      });
+      var onComplete = function () {
+        cb(null, {
           total_rows : totalRows,
           offset : skip,
-          rows : []
+          rows : results
         });
-      }
-      var keysLookup = createKeysLookup(opts.keys);
-      var keysLookupLen = Object.keys(keysLookup).length;
-      var results = new Array(opts.keys.length);
-      var numKeysFetched = 0;
-      var keysError;
-      Object.keys(keysLookup).forEach(function (key) {
-        var keysLookupIndices = keysLookup[key];
-        var trueKey = JSON.parse(key);
-        var indexOpts = {};
-        indexOpts.startkey = toIndexableString([trueKey]);
-        indexOpts.endkey = toIndexableString([trueKey, {}, {}, {}]);
-        fetchFromIndex(indexOpts, function (err, subResults) {
-          if (err) {
-            keysError = true;
-            return cb(err);
-          } else if (keysError) {
-            return;
-          } else if (typeof keysLookupIndices === 'number') {
-            results[keysLookupIndices] = subResults;
-          } else { // array of indices
-            keysLookupIndices.forEach(function (i) {
-              results[i] = subResults;
-            });
-          }
-          if (++numKeysFetched === keysLookupLen) {
-            // combine results
-            var combinedResults = [];
-            results.forEach(function (result) {
-              combinedResults = combinedResults.concat(result);
-            });
-
-            if (!shouldReduce) {
-              // since we couldn't skip/limit before, do so now
-              combinedResults = ('limit' in opts) ?
-                combinedResults.slice(skip, opts.limit + skip) :
-                (skip > 0) ? combinedResults.slice(skip) : combinedResults;
+      };
+      if (opts.include_docs && results.length) {
+        // fetch and attach documents
+        var numDocsFetched = 0;
+        results.forEach(function (viewRow) {
+          var val = viewRow.value;
+          //in this special case, join on _id (issue #106)
+          var dbId = (val && typeof val === 'object' && val._id) || viewRow.id;
+          index.sourceDB.get(dbId, function (_, joined_doc) {
+            if (joined_doc) {
+              viewRow.doc = joined_doc;
             }
-            onMapResultsReady(combinedResults);
-          }
+            if (++numDocsFetched === results.length) {
+              onComplete();
+            }
+          });
         });
-      });
-    } else { // normal query, no 'keys'
-
-      var indexOpts = {};
-
-      // don't include the seq, which we stored alongside these
-      indexOpts.descending = opts.descending;
-      if (typeof opts.startkey !== 'undefined') {
-        indexOpts.startkey = opts.descending ?
-          toIndexableString([opts.startkey, {}, {}, {}]) :
-          toIndexableString([opts.startkey]);
+      } else { // don't need the docs
+        onComplete();
       }
-      if (typeof opts.endkey !== 'undefined') {
-        indexOpts.endkey = opts.descending ?
-          toIndexableString([opts.endkey]) :
-          toIndexableString([opts.endkey, {}, {}, {}]);
-      }
-      if (typeof opts.key !== 'undefined') {
-        var keyStart = toIndexableString([opts.key]);
-        var keyEnd = toIndexableString([opts.key, {}, {}, {}]);
-        if (indexOpts.descending) {
-          indexOpts.endkey = keyStart;
-          indexOpts.startkey = keyEnd;
-        } else {
-          indexOpts.startkey = keyStart;
-          indexOpts.endkey = keyEnd;
-        }
-      }
-
-      if (!shouldReduce) {
-        if (typeof opts.limit === 'number') {
-          indexOpts.limit = opts.limit;
-        }
-        indexOpts.skip = skip;
-      }
-
-      fetchFromIndex(indexOpts, function (err, results) {
-        if (err) {
-          return cb(err);
-        }
-        onMapResultsReady(results);
-      });
     }
-  });
+  }
+
+  if (typeof opts.keys !== 'undefined') {
+    var keysLookup = createKeysLookup(opts.keys);
+    var keysLookupLen = Object.keys(keysLookup).length;
+    var results = new Array(opts.keys.length);
+    var numKeysFetched = 0;
+    var keysError;
+    Object.keys(keysLookup).forEach(function (key) {
+      var keysLookupIndices = keysLookup[key];
+      var trueKey = JSON.parse(key);
+      var indexOpts = {};
+      indexOpts.startkey = toIndexableString([trueKey]);
+      indexOpts.endkey = toIndexableString([trueKey, {}, {}, {}]);
+      fetchFromIndex(indexOpts, function (err, subResults) {
+        if (err) {
+          keysError = true;
+          return cb(err);
+        } else if (keysError) {
+          return;
+        } else if (typeof keysLookupIndices === 'number') {
+          results[keysLookupIndices] = subResults;
+        } else { // array of indices
+          keysLookupIndices.forEach(function (i) {
+            results[i] = subResults;
+          });
+        }
+        if (++numKeysFetched === keysLookupLen) {
+          // combine results
+          var combinedResults = [];
+          results.forEach(function (result) {
+            combinedResults = combinedResults.concat(result);
+          });
+
+          if (!shouldReduce) {
+            // since we couldn't skip/limit before, do so now
+            combinedResults = ('limit' in opts) ?
+              combinedResults.slice(skip, opts.limit + skip) :
+              (skip > 0) ? combinedResults.slice(skip) : combinedResults;
+          }
+          onMapResultsReady(combinedResults);
+        }
+      });
+    });
+  } else { // normal query, no 'keys'
+
+    var indexOpts = {};
+
+    // don't include the seq, which we stored alongside these
+    indexOpts.descending = opts.descending;
+    if (typeof opts.startkey !== 'undefined') {
+      indexOpts.startkey = opts.descending ?
+        toIndexableString([opts.startkey, {}, {}, {}]) :
+        toIndexableString([opts.startkey]);
+    }
+    if (typeof opts.endkey !== 'undefined') {
+      indexOpts.endkey = opts.descending ?
+        toIndexableString([opts.endkey]) :
+        toIndexableString([opts.endkey, {}, {}, {}]);
+    }
+    if (typeof opts.key !== 'undefined') {
+      var keyStart = toIndexableString([opts.key]);
+      var keyEnd = toIndexableString([opts.key, {}, {}, {}]);
+      if (indexOpts.descending) {
+        indexOpts.endkey = keyStart;
+        indexOpts.startkey = keyEnd;
+      } else {
+        indexOpts.startkey = keyStart;
+        indexOpts.endkey = keyEnd;
+      }
+    }
+
+    if (!shouldReduce) {
+      if (typeof opts.limit === 'number') {
+        indexOpts.limit = opts.limit;
+      }
+      indexOpts.skip = skip;
+    }
+
+    fetchFromIndex(indexOpts, function (err, results) {
+      if (err) {
+        return cb(err);
+      }
+      onMapResultsReady(results);
+    });
+  }
 }
 
 exports.removeIndex = function (fun, callback) {
@@ -916,7 +900,7 @@ exports.query = function (fun, opts, callback) {
     callback = opts;
     opts = {};
   }
-  opts = opts || {};
+  opts = utils.clone(opts || {});
   if (callback) {
     opts.complete = callback;
   }
