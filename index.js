@@ -548,7 +548,8 @@ function updateIndexInner(index, ultimateCB) {
             }
           });
 
-          Object.keys(indexableKeysToKeyValues).forEach(function (key) {
+          var newKeys = Object.keys(indexableKeysToKeyValues);
+          newKeys.forEach(function (key) {
             if (!oldKeys[key]) {
               // new doc
               kvDocs.push({
@@ -557,7 +558,7 @@ function updateIndexInner(index, ultimateCB) {
               });
             }
           });
-          metaDoc.keys = uniq(Object.keys(indexableKeysToKeyValues).concat(oldKeys));
+          metaDoc.keys = uniq(newKeys.concat(oldKeys));
           kvDocs.push(metaDoc);
 
           lastSeqDoc.seq = seq;
