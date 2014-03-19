@@ -479,37 +479,39 @@ function updateIndexInner(index, ultimateCB) {
 
     var docId = doc.doc._id;
     var indexableKeysToKeyValues = {};
-    var i = 0;
-    var emit = function (key, value) {
-      var indexableStringKey = toIndexableString([key, docId, value, i++]);
-      indexableKeysToKeyValues[indexableStringKey] = {
-        id  : docId,
-        key : normalizeKey(key),
-        value : normalizeKey(value)
+    if (!('deleted' in doc)) {
+      var i = 0;
+      var emit = function (key, value) {
+        var indexableStringKey = toIndexableString([key, docId, value, i++]);
+        indexableKeysToKeyValues[indexableStringKey] = {
+          id  : docId,
+          key : normalizeKey(key),
+          value : normalizeKey(value)
+        };
       };
-    };
 
-    var mapFun = evalFunc(index.mapFun.toString(), emit, sum, log, Array.isArray,
-      JSON.parse);
+      var mapFun = evalFunc(index.mapFun.toString(), emit, sum, log, Array.isArray,
+        JSON.parse);
 
-    var reduceFun;
-    if (index.reduceFun) {
-      if (builtInReduce[index.reduceFun]) {
-        reduceFun = builtInReduce[index.reduceFun];
-      } else {
-        reduceFun = evalFunc(index.reduceFun.toString(), emit, sum, log, Array.isArray,
-          JSON.parse);
+      var reduceFun;
+      if (index.reduceFun) {
+        if (builtInReduce[index.reduceFun]) {
+          reduceFun = builtInReduce[index.reduceFun];
+        } else {
+          reduceFun = evalFunc(index.reduceFun.toString(), emit, sum, log, Array.isArray,
+            JSON.parse);
+        }
       }
-    }
 
-    mapFun.call(null, doc.doc);
+      mapFun.call(null, doc.doc);
 
-    if (reduceFun) {
-      Object.keys(indexableKeysToKeyValues).forEach(function (indexableKey) {
-        var keyValue = indexableKeysToKeyValues[indexableKey];
-        keyValue.reduceOutput = reduceFun.call(null, [keyValue.key], [keyValue.value],
-          false);
-      });
+      if (reduceFun) {
+        Object.keys(indexableKeysToKeyValues).forEach(function (indexableKey) {
+          var keyValue = indexableKeysToKeyValues[indexableKey];
+          keyValue.reduceOutput = reduceFun.call(null, [keyValue.key], [keyValue.value],
+            false);
+        });
+      }
     }
 
     index.db.get('_local/lastSeq', function (err, lastSeqDoc) {
@@ -532,28 +534,21 @@ function updateIndexInner(index, ultimateCB) {
           if (err) {
             return cb(err);
           }
-          //console.log('metaDoc.keys')
-          //console.log(metaDoc.keys);
-          //console.log('res');
-          //console.log(res);
           var kvDocs = res.rows.filter(function (row) {
             return row.doc || {_id : row.key};
           });
 
-          //console.log('existing kvDocs');
-          //console.log(kvDocs);
-
           var oldKeys = {};
           kvDocs.forEach(function (kvDoc) {
             oldKeys[kvDoc._id] = true;
-            kvDoc._deleted = 'deleted' in doc || !indexableKeysToKeyValues[kvDoc._id];
+            kvDoc._deleted = !indexableKeysToKeyValues[kvDoc._id];
             if (!kvDoc._deleted) {
               kvDoc.value = indexableKeysToKeyValues[kvDoc._id];
             }
           });
 
           Object.keys(indexableKeysToKeyValues).forEach(function (key) {
-            if (!oldKeys[key] && !('deleted' in doc)) {
+            if (!oldKeys[key]) {
               // new doc
               kvDocs.push({
                 _id : key,
@@ -561,22 +556,16 @@ function updateIndexInner(index, ultimateCB) {
               });
             }
           });
-
           metaDoc.keys = Object.keys(indexableKeysToKeyValues);
           kvDocs.push(metaDoc);
 
           lastSeqDoc.seq = seq;
           kvDocs.push(lastSeqDoc);
 
-          //console.log('pushing kvDocs');
-          //console.log(kvDocs);
-
           index.db.bulkDocs({docs : kvDocs}, function (err) {
             if (err) {
               return cb(err);
             }
-            //console.log('pushed docs: kvDocs');
-            //console.log(kvDocs);
             cb(null);
           });
         });
@@ -597,6 +586,7 @@ function updateIndexInner(index, ultimateCB) {
         ultimateCB(gotError);
       }
     } else if (complete && numStarted === numFinished) {
+      index.seq = lastSeq;
       ultimateCB(null);
     }
   }
@@ -704,7 +694,6 @@ function queryIndex(index, opts, cb) {
     if (err) {
       return cb(err);
     }
-    console.log(totalRowsRes.rows);
     var totalRows = totalRowsRes.total_rows;
 
     var shouldReduce = index.reduceFun && opts.reduce !== false;
@@ -712,7 +701,6 @@ function queryIndex(index, opts, cb) {
 
     function fetchFromIndex(indexOpts, cb) {
       indexOpts.include_docs = true;
-      console.log(indexOpts);
       index.db.allDocs(indexOpts, function (err, res) {
         if (err) {
           return cb(err);
@@ -778,7 +766,7 @@ function queryIndex(index, opts, cb) {
         var trueKey = JSON.parse(key);
         var indexOpts = {};
         indexOpts.startkey = toIndexableString([trueKey]);
-        indexOpts.endkey = toIndexableString([trueKey, {}]);
+        indexOpts.endkey = toIndexableString([trueKey, {}, {}, {}]);
         fetchFromIndex(indexOpts, function (err, subResults) {
           if (err) {
             keysError = true;
@@ -855,6 +843,7 @@ function queryIndex(index, opts, cb) {
 }
 
 exports.removeIndex = function (fun, callback) {
+  console.log('remove index');
   var db = this;
   var realCB;
   if (callback) {
@@ -892,11 +881,11 @@ exports.removeIndex = function (fun, callback) {
         if (err) {
           return reject(err);
         }
-
         fun = doc.views[viewName];
         remove();
       });
     } else {
+      console.log('remove!');
       remove();
     }
   });

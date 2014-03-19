@@ -79,6 +79,7 @@ function tests(dbName, dbType, viewType) {
     }).then(function () {
       done();
     }).catch(function (err) {
+      console.log('couldnt delete index');
       console.log(err);
       done();
     });
