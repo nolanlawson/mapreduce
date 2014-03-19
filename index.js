@@ -13,6 +13,8 @@ var log = (typeof console !== 'undefined') ?
 
 var updateIndexQueue = new TaskQueue();
 updateIndexQueue.registerTask('updateIndex', updateIndexInner);
+updateIndexQueue.registerTask('destroy', PouchDB.destroy);
+updateIndexQueue.registerTask('queryIndex', queryIndex);
 
 var indexes = {};
 
@@ -442,6 +444,25 @@ function getIndex(sourceDB, mapFun, reduceFun, cb) {
         return cb(err);
       }
       var index = new Index(name, db, sourceDB, mapFun, reduceFun);
+      index.db.get('_local/lastSeq', function (err, lastSeqDoc) {
+        if (err) {
+          if (err.name !== 'not_found') {
+            return cb(err);
+          } else {
+            lastSeqDoc = {_id : '_local/lastSeq', seq : 0};
+
+            index.db.put(lastSeqDoc, function (err) {
+              if (err) {
+                return cb(err);
+              }
+              index.seq = 0;
+              cb(null, index);
+            });
+          }
+        } else {
+          index.seq = lastSeqDoc.seq;
+        }
+      });
       cb(null, index);
     });
   });
@@ -496,24 +517,49 @@ function updateIndexInner(index, ultimateCB) {
         return cb(err);
       }
 
-      index.db.get('_local/' + docId, function (err, metaDoc) {
+      index.db.get('_local/doc_' + docId, function (err, metaDoc) {
         if (err) {
-          return cb(err);
+          if (err.name !== 'not_found') {
+            return cb(err);
+          } else {
+            metaDoc = {
+              _id : '_local/doc_' + docId,
+              keys : []
+            };
+          }
         }
         index.db.allDocs({keys : metaDoc.keys, include_docs : true}, function (err, res) {
           if (err) {
             return cb(err);
           }
-          var kvDocs = res.rows.map(function (e) { return e.doc; });
+          //console.log('metaDoc.keys')
+          //console.log(metaDoc.keys);
+          //console.log('res');
+          //console.log(res);
+          var kvDocs = res.rows.filter(function (row) {
+            return row.doc || {_id : row.key};
+          });
 
+          //console.log('existing kvDocs');
+          //console.log(kvDocs);
+
+          var oldKeys = {};
           kvDocs.forEach(function (kvDoc) {
-            if (('deleted' in doc) || !indexableKeysToKeyValues[kvDoc._id]) {
-              kvDoc._deleted = true;
-              return;
-            } else {
-              kvDoc._deleted = false;
+            oldKeys[kvDoc._id] = true;
+            kvDoc._deleted = 'deleted' in doc || !indexableKeysToKeyValues[kvDoc._id];
+            if (!kvDoc._deleted) {
+              kvDoc.value = indexableKeysToKeyValues[kvDoc._id];
             }
-            kvDoc.value = indexableKeysToKeyValues[kvDoc._id];
+          });
+
+          Object.keys(indexableKeysToKeyValues).forEach(function (key) {
+            if (!oldKeys[key] && !('deleted' in doc)) {
+              // new doc
+              kvDocs.push({
+                _id : key,
+                value : indexableKeysToKeyValues[key]
+              });
+            }
           });
 
           metaDoc.keys = Object.keys(indexableKeysToKeyValues);
@@ -522,10 +568,15 @@ function updateIndexInner(index, ultimateCB) {
           lastSeqDoc.seq = seq;
           kvDocs.push(lastSeqDoc);
 
+          //console.log('pushing kvDocs');
+          //console.log(kvDocs);
+
           index.db.bulkDocs({docs : kvDocs}, function (err) {
             if (err) {
               return cb(err);
             }
+            //console.log('pushed docs: kvDocs');
+            //console.log(kvDocs);
             cb(null);
           });
         });
@@ -554,18 +605,14 @@ function updateIndexInner(index, ultimateCB) {
   queue.registerTask('processChange', processChange);
 
   function processChange(doc, cb) {
-    if (gotError) {
-      return;
-    }
     if (doc.id[0] === '_') {
-      return;
+      numFinished++;
+      return cb(null);
     }
 
     callMapFun(doc, doc.seq, function (err) {
-      if (gotError) {
-        return;
-      } else if (err) {
-        gotError = err;
+      if (err) {
+        return cb(err);
       } else {
         lastSeq = Math.max(lastSeq, doc.seq);
         numFinished++;
@@ -574,15 +621,18 @@ function updateIndexInner(index, ultimateCB) {
     });
   }
 
-  index.db.changes({
+  index.sourceDB.changes({
     conflicts: true,
     include_docs: true,
     since : index.seq,
     onChange: function (doc) {
       numStarted++;
-      queue.addTask('processChange', doc, function () {
+      queue.addTask('processChange', [doc, function (err) {
+        if (err) {
+          gotError = err;
+        }
         checkComplete();
-      });
+      }]);
       queue.execute();
     },
     complete: function () {
@@ -648,12 +698,13 @@ function reduceIndex(index, results, options) {
   });
 }
 
-function queryIndex(index, opts) {
+function queryIndex(index, opts, cb) {
 
   index.db.allDocs({limit : 0}, function (err, totalRowsRes) {
     if (err) {
-      return opts.complete(err);
+      return cb(err);
     }
+    console.log(totalRowsRes.rows);
     var totalRows = totalRowsRes.total_rows;
 
     var shouldReduce = index.reduceFun && opts.reduce !== false;
@@ -661,6 +712,7 @@ function queryIndex(index, opts) {
 
     function fetchFromIndex(indexOpts, cb) {
       indexOpts.include_docs = true;
+      console.log(indexOpts);
       index.db.allDocs(indexOpts, function (err, res) {
         if (err) {
           return cb(err);
@@ -683,7 +735,7 @@ function queryIndex(index, opts) {
           delete result.reduceOutput;
         });
         var onComplete = function () {
-          opts.complete(null, {
+          cb(null, {
             total_rows : totalRows,
             offset : skip,
             rows : results
@@ -696,7 +748,7 @@ function queryIndex(index, opts) {
             var val = viewRow.value;
             //in this special case, join on _id (issue #106)
             var dbId = (val && typeof val === 'object' && val._id) || viewRow.id;
-            index.db.get(dbId, function (_, joined_doc) {
+            index.sourceDB.get(dbId, function (_, joined_doc) {
               if (joined_doc) {
                 viewRow.doc = joined_doc;
               }
@@ -713,7 +765,7 @@ function queryIndex(index, opts) {
 
     if ('keys' in opts) {
       if (!opts.keys.length) {
-        return opts.complete(null, {
+        return cb(null, {
           total_rows : totalRows,
           offset : skip,
           rows : []
@@ -733,7 +785,7 @@ function queryIndex(index, opts) {
         fetchFromIndex(indexOpts, function (err, subResults) {
           if (err) {
             keysError = true;
-            return opts.complete(err);
+            return cb(err);
           } else if (keysError) {
             return;
           } else if (typeof keysLookupIndices === 'number') {
@@ -768,17 +820,17 @@ function queryIndex(index, opts) {
       indexOpts.descending = opts.descending;
       if (typeof opts.startkey !== 'undefined') {
         indexOpts.startkey = opts.descending ?
-          toIndexableString([opts.startkey, {}]) :
+          toIndexableString([opts.startkey, {}, {}, {}]) :
           toIndexableString([opts.startkey]);
       }
       if (typeof opts.endkey !== 'undefined') {
         indexOpts.endkey = opts.descending ?
           toIndexableString([opts.endkey]) :
-          toIndexableString([opts.endkey, {}]);
+          toIndexableString([opts.endkey, {}, {}, {}]);
       }
       if (typeof opts.key !== 'undefined') {
         var keyStart = toIndexableString([opts.key]);
-        var keyEnd = toIndexableString([opts.key, {}]);
+        var keyEnd = toIndexableString([opts.key, {}, {}, {}]);
         if (indexOpts.descending) {
           indexOpts.endkey = keyStart;
           indexOpts.startkey = keyEnd;
@@ -797,7 +849,7 @@ function queryIndex(index, opts) {
 
       fetchFromIndex(indexOpts, function (err, results) {
         if (err) {
-          return opts.complete(err);
+          return cb(err);
         }
         onMapResultsReady(results);
       });
@@ -825,13 +877,13 @@ exports.removeIndex = function (fun, callback) {
         if (err) {
           return reject(err);
         }
-
-        PouchDB.destroy(index.name, {adapter : index.adapter}, function (err, info) {
+        updateIndexQueue.addTask('destroy', [index.name, function (err) {
           if (err) {
             return reject(err);
           }
-          return resolve(info);
-        });
+          return resolve(null);
+        }]);
+        updateIndexQueue.execute();
       });
     }
 
@@ -955,7 +1007,11 @@ exports.query = function (fun, opts, callback) {
             if (err) {
               return opts.complete(err);
             }
-            queryIndex(index, opts);
+            /*
+            updateIndexQueue.addTask('queryIndex', [index, opts, opts.complete]);
+            updateIndexQueue.execute();
+            */
+            queryIndex(index, opts, opts.complete);
           });
         }
       });

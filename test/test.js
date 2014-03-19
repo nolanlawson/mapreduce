@@ -72,14 +72,20 @@ function tests(dbName, dbType, viewType) {
     });
   });
   afterEach(function (done) {
-    return new Pouch(dbName).then(function (db) {
-      return db.removeIndex('theViewDoc/theView');
+    new Pouch(dbName).then(function (db) {
+      db.removeIndex('theViewDoc/theView');
     }).then(function () {
       return Pouch.destroy(dbName);
+    }).then(function () {
+      done();
+    }).catch(function (err) {
+      console.log(err);
+      done();
     });
   });
   describe('views', function () {
     it("Test basic view", function () {
+      this.timeout(10000);
       return new Pouch(dbName).then(function (db) {
         return createView(db, {
           map: function (doc) {
