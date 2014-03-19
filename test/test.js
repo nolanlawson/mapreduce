@@ -20,7 +20,6 @@ dbs.split(',').forEach(function (db) {
   var viewTypes = ['persisted', 'temp'];
   viewTypes.forEach(function (viewType) {
     describe(dbType + ' with ' + viewType + ' views:', function () {
-      this.timeout(30000);
       tests(db, dbType, viewType);
     });
   });
@@ -1527,8 +1526,8 @@ function tests(dbName, dbType, viewType) {
               }
               return db.query(queryFun);
             }).then(function (res) {
-              res.total_rows.should.equal(1);
-              res.rows.length.should.equal(1);
+              res.total_rows.should.equal(1, 'equals1-1');
+              res.rows.length.should.equal(1, 'equals1-2');
               return db.get('1');
             }).then(function (doc1) {
               doc1.name = 'baz';

@@ -21,8 +21,15 @@ var processKey = function (key) {
   return JSON.stringify(normalizeKey(key));
 };
 
-// similar to java's hashCode function, converted to a hex string, adapted from:
-// http://werxltd.com/wp/2010/05/13/javascript-implementation-of-javas-string-hashcode-method/
+function uniq(arr) {
+  var map = {};
+  arr.forEach(function (element) {
+    map[element] = true;
+  });
+  return Object.keys(map);
+}
+
+// similar to java's hashCode function, converted to a hex string
 function hexHashCode(str) {
   var hash = 0;
   for (var i = 0, len = str.length; i < len; i++) {
@@ -550,7 +557,7 @@ function updateIndexInner(index, ultimateCB) {
               });
             }
           });
-          metaDoc.keys = Object.keys(indexableKeysToKeyValues);
+          metaDoc.keys = uniq(Object.keys(indexableKeysToKeyValues).concat(oldKeys));
           kvDocs.push(metaDoc);
 
           lastSeqDoc.seq = seq;
@@ -593,7 +600,9 @@ function updateIndexInner(index, ultimateCB) {
       numFinished++;
       return cb(null);
     }
-
+    if (doc.seq < index.seq) {
+      return cb(null);
+    }
     callMapFun(doc, doc.seq, function (err) {
       if (err) {
         return cb(err);
@@ -684,7 +693,7 @@ function reduceIndex(index, results, options, cb) {
 
 
 function queryIndex(index, opts, cb) {
-  updateIndexQueue.addTask('queryIndex', [index, opts, opts.complete]);
+  updateIndexQueue.addTask('queryIndex', [index, opts, cb]);
   updateIndexQueue.execute();
 }
 
