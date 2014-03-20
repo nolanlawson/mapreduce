@@ -458,7 +458,8 @@ function getIndex(sourceDB, mapFun, reduceFun, cb) {
     }
     var name = info.db_name + '-mrview-' + hexHashCode(mapFun.toString() +
         (reduceFun && reduceFun.toString()));
-    new PouchDB(name, {adapter : sourceDB.adapter}, function (err, db) {
+    var pouchOpts = {auto_compaction : true, adapter : sourceDB.adapter};
+    new PouchDB(name, pouchOpts, function (err, db) {
       if (err) {
         return cb(err);
       }
