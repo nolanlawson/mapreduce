@@ -1549,5 +1549,53 @@ function tests(dbName, dbType, viewType) {
         });
       });
     }
+
+    it('should handle removes/undeletes/updates', function () {
+      var theDoc = {name : 'bar', _id : '1'};
+
+      return new Pouch(dbName).then(function (db) {
+        return createView(db, {
+          map : function (doc) {
+            emit(doc.name);
+          }
+        }).then(function (queryFun) {
+          return db.put(theDoc).then(function (info) {
+            theDoc._rev = info.rev;
+            return db.query(queryFun);
+          }).then(function (res) {
+            res.rows.length.should.equal(1);
+            theDoc._deleted = true;
+            return db.post(theDoc);
+          }).then(function (info) {
+            theDoc._rev = info.rev;
+            return db.query(queryFun);
+          }).then(function (res) {
+            res.rows.length.should.equal(0);
+            theDoc._deleted = false;
+            return db.post(theDoc);
+          }).then(function (info) {
+            theDoc._rev = info.rev;
+            return db.query(queryFun);
+          }).then(function (res) {
+            res.rows.length.should.equal(1);
+            theDoc.name = 'foo';
+            return db.post(theDoc);
+          }).then(function (info) {
+            theDoc._rev = info.rev;
+            return db.query(queryFun);
+          }).then(function (res) {
+            res.rows.length.should.equal(1);
+            res.rows[0].key.should.equal('foo');
+            theDoc._deleted = true;
+            return db.post(theDoc);
+          }).then(function (info) {
+            theDoc._rev = info.rev;
+            return db.query(queryFun);
+          }).then(function (res) {
+            res.rows.length.should.equal(0);
+          });
+        });
+      });
+    });
   });
 }
