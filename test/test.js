@@ -1597,5 +1597,41 @@ function tests(dbName, dbType, viewType) {
         });
       });
     });
+    it('should handle user errors in map functions', function () {
+      return new Pouch(dbName).then(function (db) {
+        return createView(db, {
+          map : function (doc) {
+            emit(doc.nonexistent.foo);
+          }
+        }).then(function (queryFun) {
+          return db.put({name : 'bar', _id : '1'}).then(function (info) {
+            return db.query(queryFun);
+          }).then(function (res) {
+            res.rows.should.have.length(0);
+          });
+        });
+      });
+    });
+    it('should handle user errors in reduce functions', function () {
+      return new Pouch(dbName).then(function (db) {
+        return createView(db, {
+          map : function (doc) {
+            emit(doc.name);
+          },
+          reduce : function (keys) {
+            return keys[0].foo.bar;
+          }
+        }).then(function (queryFun) {
+          return db.put({name : 'bar', _id : '1'}).then(function (info) {
+            return db.query(queryFun, {group: true});
+          }).then(function (res) {
+            res.rows.map(function (row) {return row.key; }).should.deep.equal(['bar']);
+            return db.query(queryFun, {reduce: false});
+          }).then(function (res) {
+            res.rows.map(function (row) {return row.key; }).should.deep.equal(['bar']);
+          });
+        });
+      });
+    });
   });
 }

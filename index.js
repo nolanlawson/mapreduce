@@ -31,18 +31,14 @@ function hexHashCode(str) {
   return (hash & 0xfffffff).toString(16);
 }
 
-// This is the first implementation of a basic plugin, we register the
-// plugin object with pouch and it is mixin'd to each database created
-// (regardless of adapter), adapters can override plugins by providing
-// their own implementation. functions on the plugin object that start
-// with _ are reserved function that are called by pouchdb for special
-// notifications.
-
-// If we wanted to store incremental views we can do it here by listening
-// to the changes feed (keeping track of our last update_seq between page loads)
-// and storing the result of the map function (possibly using the upcoming
-// extracted adapter functions)
-
+function logError(str) {
+  // sometimes there's no good way to communicate to the user
+  // that their map/reduce function errored, so we console.log.
+  // but it's annoying to see these while testing
+  if (!process || !process.env || !process.env.TEST_DB) {
+    console.log(str);
+  }
+}
 
 function createKeysLookup(keys) {
   // creates a lookup map for the given keys, so that doing
@@ -287,11 +283,12 @@ function viewQuery(db, fun, options) {
     }
   }
 
+  var mapError;
+
   //only proceed once all documents are mapped and joined
   function checkComplete() {
     var error;
-    if (completed && results.length === num_started) {
-
+    if (completed && (mapError || results.length === num_started)) {
       if (typeof options.keys !== 'undefined' && results.length) {
         // user supplied a keys param, sort by keys
         results = mapUsingKeys(results, options.keys, keysLookup);
@@ -301,13 +298,19 @@ function viewQuery(db, fun, options) {
       if (options.descending) {
         results.reverse();
       }
-      if (options.reduce === false) {
+
+      var returnMapResults = function () {
         return options.complete(null, {
           total_rows: totalRows,
           offset: options.skip,
-          rows: ('limit' in options) ? results.slice(options.skip, options.limit + options.skip) :
+          rows: ('limit' in options) ?
+            results.slice(options.skip, options.limit + options.skip) :
             (options.skip > 0) ? results.slice(options.skip) : results
         });
+      };
+
+      if (options.reduce === false) {
+        return returnMapResults();
       }
 
       // TODO: actually implement group/group_level
@@ -326,14 +329,29 @@ function viewQuery(db, fun, options) {
           [key, e.id]
         ], value: [e.value]});
       });
+      var reduceError;
       groups.forEach(function (e) {
-        e.value = fun.reduce.call(null, e.key, e.value);
+        if (reduceError) {
+          return;
+        }
+        try {
+          e.value = fun.reduce.call(null, e.key, e.value);
+        } catch (err) {
+          logError('unexpected error in reduce function');
+          logError(err);
+          reduceError = true;
+          return;
+        }
         if (e.value.sumsqr && e.value.sumsqr instanceof Error) {
           error = e.value;
           return;
         }
         e.key = e.key[0][0];
       });
+      if (reduceError) {
+        returnMapResults();
+        return;
+      }
       if (error) {
         options.complete(error);
         return;
@@ -346,13 +364,20 @@ function viewQuery(db, fun, options) {
     }
   }
 
+
   db.changes({
     conflicts: true,
     include_docs: true,
     onChange: function (doc) {
-      if (!('deleted' in doc) && doc.id[0] !== "_") {
+      if (!('deleted' in doc) && doc.id[0] !== "_" && !mapError) {
         current = {doc: doc.doc};
-        fun.map.call(null, doc.doc);
+        try {
+          fun.map.call(null, doc.doc);
+        } catch (err) {
+          logError('unexpected error in map function');
+          logError(err);
+          mapError = true;
+        }
       }
     },
     complete: function () {
@@ -489,13 +514,23 @@ function updateIndexInner(index, ultimateCB) {
         }
       }
 
-      mapFun.call(null, doc.doc);
+      try {
+        mapFun.call(null, doc.doc);
+      } catch (err) {
+        logError('unexpected error in map function');
+        logError(err);
+      }
 
       if (reduceFun) {
         Object.keys(indexableKeysToKeyValues).forEach(function (indexableKey) {
           var keyValue = indexableKeysToKeyValues[indexableKey];
-          keyValue.reduceOutput = reduceFun.call(null, [keyValue.key], [keyValue.value],
-            false);
+          try {
+            keyValue.reduceOutput = reduceFun.call(null, [keyValue.key], [keyValue.value],
+              false);
+          } catch (err) {
+            logError('unexpected error in reduce function');
+            logError(err);
+          }
         });
       }
     }
@@ -717,7 +752,9 @@ function queryIndexInner(index, opts, cb) {
   }
 
   function onMapResultsReady(results) {
-    if (shouldReduce) {
+    if (shouldReduce && results.every(function (value) {
+      return 'reduceOutput' in value; // else reduce function errored
+    })) {
       return reduceIndex(index, results, opts, cb);
     } else {
       results.forEach(function (result) {
