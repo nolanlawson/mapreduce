@@ -79,15 +79,15 @@ function tests(dbName, dbType, viewType) {
     var db;
     new Pouch(dbName).then(function (thisDB) {
       db = thisDB;
-      db.removeIndex(createdViews[0]);
+      db.cleanupIndex(createdViews[0]);
     }).then(function () {
       if (createdViews[1]) {
-        return db.removeIndex(createdViews[1]);
+        return db.cleanupIndex(createdViews[1]);
       }
       return function () {};
     }).then(function () {
       if (createdViews[2]) {
-        return db.removeIndex(createdViews[2]);
+        return db.cleanupIndex(createdViews[2]);
       }
       return function () {};
     }).then(function () {

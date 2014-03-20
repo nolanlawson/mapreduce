@@ -875,7 +875,7 @@ function queryIndexInner(index, opts, cb) {
   }
 }
 
-exports.removeIndex = function (fun, callback) {
+exports.cleanupIndex = function (fun, callback) {
   var db = this;
   var realCB;
   if (callback) {
