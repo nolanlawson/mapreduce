@@ -21,12 +21,17 @@ var processKey = function (key) {
   return JSON.stringify(normalizeKey(key));
 };
 
-function logError(str) {
-  // sometimes there's no good way to communicate to the user
-  // that their map/reduce function errored, so we console.log.
-  // but it's annoying to see these while testing
-  if (!process || !process.env || !process.env.TEST_DB) {
-    console.log(str);
+function tryCode(db, fun) {
+  // emit an event if there was an error thrown by a map/reduce function.
+  // putting try/catches in a single function also avoids deoptimizations.
+  try {
+    return {
+      output : fun.apply(null, Array.prototype.slice.call(arguments, 2))
+    };
+  } catch (e) {
+    // TODO: tests fail even tho I call db.on('error')
+    //db.emit('error', e);
+    return {error : e};
   }
 }
 
@@ -333,13 +338,11 @@ function viewQuery(db, fun, options) {
         if (reduceError) {
           return;
         }
-        try {
-          e.value = fun.reduce.call(null, e.key, e.value);
-        } catch (err) {
-          logError('unexpected error in reduce function');
-          logError(err);
+        var reduceTry = tryCode(db, fun.reduce, e.key, e.value);
+        if (reduceTry.error) {
           reduceError = true;
-          return;
+        } else {
+          e.value = reduceTry.output;
         }
         if (e.value.sumsqr && e.value.sumsqr instanceof Error) {
           error = e.value;
@@ -369,11 +372,8 @@ function viewQuery(db, fun, options) {
     onChange: function (doc) {
       if (!('deleted' in doc) && doc.id[0] !== "_" && !mapError) {
         current = {doc: doc.doc};
-        try {
-          fun.map.call(null, doc.doc);
-        } catch (err) {
-          logError('unexpected error in map function');
-          logError(err);
+        var mapTry = tryCode(db, fun.map, doc.doc);
+        if (mapTry.error) {
           mapError = true;
         }
       }
@@ -560,14 +560,15 @@ function updateIndexInner(index, cb) {
   var indexableKeysToKeyValues;
   var emitCounter;
   var doc;
-  var emit = function (key, value) {
+
+  function emit(key, value) {
     var indexableStringKey = toIndexableString([key, doc._id, value, emitCounter++]);
     indexableKeysToKeyValues[indexableStringKey] = {
       id  : doc._id,
       key : normalizeKey(key),
       value : normalizeKey(value)
     };
-  };
+  }
 
   var mapFun = evalFunc(index.mapFun.toString(), emit, sum, log, Array.isArray, JSON.parse);
 
@@ -600,20 +601,14 @@ function updateIndexInner(index, cb) {
     doc = changeInfo.doc;
 
     if (!('deleted' in changeInfo)) {
-      try {
-        mapFun.call(null, changeInfo.doc);
-      } catch (err) {
-        logError('unexpected error in map function');
-        logError(err);
-      }
+      tryCode(index.sourceDB, mapFun, changeInfo.doc);
       if (reduceFun) {
         Object.keys(indexableKeysToKeyValues).forEach(function (indexableKey) {
           var keyValue = indexableKeysToKeyValues[indexableKey];
-          try {
-            keyValue.reduceOutput = reduceFun.call(null, [keyValue.key], [keyValue.value], false);
-          } catch (err) {
-            logError('unexpected error in reduce function');
-            logError(err);
+          var tryReduce = tryCode(index.sourceDB, reduceFun, [keyValue.key], [keyValue.value],
+            false);
+          if (!tryReduce.error) {
+            keyValue.reduceOutput = tryReduce.output;
           }
         });
       }

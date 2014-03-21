@@ -1599,6 +1599,7 @@ function tests(dbName, dbType, viewType) {
     });
     it('should handle user errors in map functions', function () {
       return new Pouch(dbName).then(function (db) {
+        db.on('error', function () { /* noop */ });
         return createView(db, {
           map : function (doc) {
             emit(doc.nonexistent.foo);
