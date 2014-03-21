@@ -21,16 +21,6 @@ var processKey = function (key) {
   return JSON.stringify(normalizeKey(key));
 };
 
-// similar to java's hashCode function, except outputs a hex string
-function hexHashCode(str) {
-  var hash = 0;
-  for (var i = 0, len = str.length; i < len; i++) {
-    var char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-  }
-  return (hash & 0xfffffff).toString(16);
-}
-
 function logError(str) {
   // sometimes there's no good way to communicate to the user
   // that their map/reduce function errored, so we console.log.
@@ -38,6 +28,16 @@ function logError(str) {
   if (!process || !process.env || !process.env.TEST_DB) {
     console.log(str);
   }
+}
+
+function sliceResults(results, limit, skip) {
+  skip = skip || 0;
+  if (typeof limit === 'number') {
+    return results.slice(skip, limit + skip);
+  } else if (skip > 0) {
+    return results.slice(skip);
+  }
+  return results;
 }
 
 function createKeysLookup(keys) {
@@ -107,9 +107,8 @@ var builtInReduce = {
         if (typeof values[idx] === 'number') {
           _sumsqr += values[idx] * values[idx];
         } else {
-          error =  new Error();
+          error =  new Error('builtin _stats function requires map values to be numbers');
           error.name = 'invalid_value';
-          error.message = 'builtin _stats function requires map values to be numbers';
           error.status = 500;
           return error;
         }
@@ -283,11 +282,24 @@ function viewQuery(db, fun, options) {
     }
   }
 
+  function returnMapResults() {
+    if (options.descending) {
+      results.reverse();
+    }
+    return options.complete(null, {
+      total_rows: totalRows,
+      offset: options.skip,
+      rows: sliceResults(results, options.limit, options.skip)
+    });
+  }
+
   var mapError;
 
   //only proceed once all documents are mapped and joined
   function checkComplete() {
+
     var error;
+
     if (completed && (mapError || results.length === num_started)) {
       if (typeof options.keys !== 'undefined' && results.length) {
         // user supplied a keys param, sort by keys
@@ -295,19 +307,6 @@ function viewQuery(db, fun, options) {
       } else { // normal sorting
         results.sort(sortByKeyIdValue);
       }
-      if (options.descending) {
-        results.reverse();
-      }
-
-      var returnMapResults = function () {
-        return options.complete(null, {
-          total_rows: totalRows,
-          offset: options.skip,
-          rows: ('limit' in options) ?
-            results.slice(options.skip, options.limit + options.skip) :
-            (options.skip > 0) ? results.slice(options.skip) : results
-        });
-      };
 
       if (options.reduce === false) {
         return returnMapResults();
@@ -358,8 +357,7 @@ function viewQuery(db, fun, options) {
       }
       // no total_rows/offset when reducing
       options.complete(null, {
-        rows: ('limit' in options) ? groups.slice(options.skip, options.limit + options.skip) :
-          (options.skip > 0) ? groups.slice(options.skip) : groups
+        rows : sliceResults(groups, options.limit, options.skip)
       });
     }
   }
@@ -456,7 +454,7 @@ function getIndex(sourceDB, mapFun, reduceFun, cb) {
     if (err) {
       return cb(err);
     }
-    var name = info.db_name + '-mrview-' + hexHashCode(mapFun.toString() +
+    var name = info.db_name + '-mrview-' + PouchDB.utils.Crypto.MD5(mapFun.toString() +
         (reduceFun && reduceFun.toString()));
     var pouchOpts = {auto_compaction : true, adapter : sourceDB.adapter};
     new PouchDB(name, pouchOpts, function (err, db) {
@@ -704,11 +702,9 @@ function reduceIndex(index, results, options, cb) {
   if (error) {
     return cb(error);
   }
-  var skip = options.skip || 0;
   // no total_rows/offset when reducing
   cb(null, {
-    rows: ('limit' in options) ? groups.slice(skip, options.limit + skip) :
-      (skip > 0) ? groups.slice(skip) : groups
+    rows: sliceResults(groups, options.limit, options.skip)
   });
 }
 
@@ -818,9 +814,7 @@ function queryIndexInner(index, opts, cb) {
 
           if (!shouldReduce) {
             // since we couldn't skip/limit before, do so now
-            combinedResults = ('limit' in opts) ?
-              combinedResults.slice(skip, opts.limit + skip) :
-              (skip > 0) ? combinedResults.slice(skip) : combinedResults;
+            combinedResults = sliceResults(combinedResults, opts.limit, skip);
           }
           onMapResultsReady(combinedResults);
         }
@@ -1045,14 +1039,9 @@ function QueryParseError(message) {
   this.name = 'query_parse_error';
   this.message = message;
   this.error = true;
+  try {
+    Error.captureStackTrace(this, QueryParseError);
+  } catch (e) {}
 }
 
-QueryParseError.prototype__proto__ = Error.prototype;
-
-QueryParseError.prototype.toString = function () {
-  return JSON.stringify({
-    status: this.status,
-    name: this.name,
-    message: this.message
-  });
-};
+utils.inherits(QueryParseError, Error);

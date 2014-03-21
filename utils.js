@@ -20,3 +20,5 @@ exports.clone = function (obj) {
   });
   return result;
 };
+
+exports.inherits = require('inherits');
