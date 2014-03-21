@@ -827,52 +827,94 @@ function queryViewInner(view, opts, cb) {
   }
 }
 
-exports.cleanupIndex = function (fun, callback) {
+function httpViewCleanup(db, cb) {
+  db.request({
+    method: 'POST',
+    url: '_view_cleanup'
+  }, cb);
+}
+
+exports.viewCleanup = function (origCallback) {
   var db = this;
   var realCB;
-  if (callback) {
+  if (origCallback) {
     realCB = function (err, resp) {
       process.nextTick(function () {
-        callback(err, resp);
+        origCallback(err, resp);
       });
     };
   }
   var promise = new Promise(function (resolve, reject) {
-    if (typeof fun === 'function') {
-      fun = {map : fun};
+    function callback(err, data) {
+      if (err) {
+        reject(err);
+      } else {
+        resolve(data);
+      }
     }
 
-    function remove() {
-      createView(db, fun.map, fun.reduce, function (err, view) {
-        if (err) {
-          return reject(err);
-        }
-        taskQueue.addTask('destroy', [view.name, function (err) {
+    if (db.type() === 'http') {
+      return httpViewCleanup(db, callback);
+    }
+
+    db.get('_local/mrviews', function (err, metaDoc) {
+      if (err && err.name !== 'not_found') {
+        return callback(err);
+      } else if (metaDoc && metaDoc.views) {
+        var docsToViews = {};
+        Object.keys(metaDoc.views).forEach(function (fullViewName) {
+          var parts = fullViewName.split('/');
+          var designDocName = '_design/' + parts[0];
+          var viewName = parts[1];
+          docsToViews[designDocName] = docsToViews[designDocName] || {};
+          docsToViews[designDocName][viewName] = true;
+        });
+        var opts = {
+          keys : Object.keys(docsToViews),
+          include_docs : true
+        };
+        db.allDocs(opts, function (err, res) {
           if (err) {
-            return reject(err);
+            return callback(err);
           }
-          return resolve(null);
-        }]);
-        taskQueue.execute();
-      });
-    }
-
-    if (typeof fun === 'string') {
-      var parts = fun.split('/');
-      var designDocName = parts[0];
-      var viewName = parts[1];
-
-      db.get('_design/' + designDocName, function (err, doc) {
-        if (err) {
-          return reject(err);
-        }
-        fun = doc.views[viewName];
-        remove();
-      });
-
-    } else {
-      remove();
-    }
+          console.log('called allDocs okay');
+          var numStarted = 0;
+          var numDone = 0;
+          var gotError;
+          function checkDone() {
+            console.log('checkDone() ' + numStarted + ' ' + numDone);
+            if (numStarted === numDone) {
+              if (gotError) {
+                return callback(gotError);
+              }
+              callback(null, {ok : true});
+            }
+          }
+          res.rows.forEach(function (row) {
+            Object.keys(docsToViews[row.key]).forEach(function (viewName) {
+              if (!row.doc || !row.doc[viewName]) {
+                // design doc deleted, or view function nonexistent
+                var viewDBNames = metaDoc.views[row.key.substring(8) + '/' + viewName];
+                Object.keys(viewDBNames).forEach(function (viewDBName) {
+                  numStarted++;
+                  taskQueue.addTask('destroy', [viewDBName, function (err) {
+                    if (err) {
+                      gotError = err;
+                    }
+                    numDone++;
+                    checkDone();
+                    console.log('destroyed ' + viewDBName);
+                  }]);
+                });
+              }
+            });
+          });
+          taskQueue.execute();
+        });
+      } else {
+        return callback(null, {ok : true});
+      }
+    });
   });
 
   if (realCB) {
@@ -940,7 +982,8 @@ exports.query = function (fun, opts, callback) {
       return viewQuery(db, fun, opts);
     }
 
-    var parts = fun.split('/');
+    var fullViewName = fun;
+    var parts = fullViewName.split('/');
     var designDocName = parts[0];
     var viewName = parts[1];
     db.get('_design/' + designDocName, function (err, doc) {
@@ -960,7 +1003,7 @@ exports.query = function (fun, opts, callback) {
         return opts.complete(parseError);
       }
 
-      createView(db, fun.map, fun.reduce, function (err, view) {
+      createView(db, fullViewName, fun.map, fun.reduce, function (err, view) {
         if (err) {
           return opts.complete(err);
         } else if (opts.stale === 'ok' || opts.stale === 'update_after') {

@@ -34,10 +34,8 @@ function setTimeoutPromise(time) {
 function tests(dbName, dbType, viewType) {
 
   var createView;
-  var createdViews;
   if (viewType === 'persisted') {
     createView = function (db, viewObj) {
-      createdViews.push(viewObj);
       var storableViewObj = {
         map : viewObj.map.toString()
       };
@@ -60,7 +58,6 @@ function tests(dbName, dbType, viewType) {
     };
   } else {
     createView = function (db, viewObj, cb) {
-      createdViews.push(viewObj);
       return new Promise(function (resolve, reject) {
         process.nextTick(function () {
           resolve(viewObj);
@@ -69,35 +66,28 @@ function tests(dbName, dbType, viewType) {
     };
   }
 
-  beforeEach(function (done) {
-    createdViews = [];
-    new Pouch(dbName, function (err, d) {
-      done();
-    });
+  beforeEach(function () {
+    return new Pouch(dbName);
   });
-  afterEach(function (done) {
-    var db;
-    new Pouch(dbName).then(function (thisDB) {
-      db = thisDB;
-      db.cleanupIndex(createdViews[0]);
-    }).then(function () {
-      if (createdViews[1]) {
-        return db.cleanupIndex(createdViews[1]);
+  afterEach(function () {
+    return new Pouch(dbName).then(function (db) {
+      if (viewType === 'temp') {
+        return db.destroy();
       }
-      return function () {};
-    }).then(function () {
-      if (createdViews[2]) {
-        return db.cleanupIndex(createdViews[2]);
-      }
-      return function () {};
-    }).then(function () {
-      return Pouch.destroy(dbName);
-    }).then(function () {
-      done();
-    }).catch(function (err) {
-      console.log('couldnt delete index');
-      console.log(err);
-      done();
+      return db.get('_design/theViewDoc').then(function (designDoc) {
+        return db.remove(designDoc).then(function () {
+          return db.viewCleanup();
+        }).then(function (res) {
+          res.ok.should.equal(true);
+          console.log('destroying pouch ok');
+          return db.destroy();
+        });
+      }).catch(function (err) {
+        console.log('couldnt delete theViewDoc');
+        console.log(err);
+        console.log('destroying pouch ok');
+        return db.destroy();
+      });
     });
   });
   describe('views', function () {
