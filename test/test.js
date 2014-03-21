@@ -1621,5 +1621,97 @@ function tests(dbName, dbType, viewType) {
         });
       });
     });
+
+    if (viewType === 'persisted') {
+      it('should handle user errors in design docs', function () {
+        return new Pouch(dbName).then(function (db) {
+          return db.put({
+            _id : '_design/theViewDoc'
+          }).then(function () {
+            return db.query('foo/bar');
+          }).then(function (res) {
+            should.not.exist(res);
+          }).catch(function (err) {
+            err.name.should.equal('not_found');
+          });
+        });
+      });
+
+      it('should allow the user to create many design docs', function () {
+        this.timeout(4000);
+        function getKey(row) {
+          return row.key;
+        }
+        return new Pouch(dbName).then(function (db) {
+          return db.put({
+            _id : '_design/foo',
+            views : {
+              byId : { map : function (doc) { emit(doc._id); }.toString()},
+              byField : { map : function (doc) { emit(doc.field); }.toString()}
+            }
+          }).then(function () {
+            return db.put({_id : 'myDoc', field : 'myField'});
+          }).then(function () {
+            return db.query('foo/byId');
+          }).then(function (res) {
+            res.rows.map(getKey).should.deep.equal(['myDoc']);
+            return db.put({
+              _id : '_design/bar',
+              views : {
+                byId : {map : function (doc) { emit(doc._id); }.toString()}
+              }
+            });
+          }).then(function () {
+            return db.query('bar/byId');
+          }).then(function (res) {
+            res.rows.map(getKey).should.deep.equal(['myDoc']);
+          }).then(function () {
+            return db.viewCleanup();
+          }).then(function () {
+            return db.query('foo/byId');
+          }).then(function (res) {
+            res.rows.map(getKey).should.deep.equal(['myDoc']);
+            return db.query('foo/byField');
+          }).then(function (res) {
+            res.rows.map(getKey).should.deep.equal(['myField']);
+            return db.query('bar/byId');
+          }).then(function (res) {
+            res.rows.map(getKey).should.deep.equal(['myDoc']);
+            return db.get('_design/bar');
+          }).then(function (barDoc) {
+            return db.remove(barDoc);
+          }).then(function () {
+            return db.get('_design/foo');
+          }).then(function (fooDoc) {
+            delete fooDoc.views.byField;
+            return db.put(fooDoc);
+          }).then(function () {
+            return db.query('foo/byId');
+          }).then(function (res) {
+            res.rows.map(getKey).should.deep.equal(['myDoc']);
+            return db.viewCleanup();
+          }).then(function () {
+            return db.query('foo/byId');
+          }).then(function (res) {
+            res.rows.map(getKey).should.deep.equal(['myDoc']);
+            return db.query('foo/byField').then(function (res) {
+              should.not.exist(res);
+            }).catch(function (err) {
+              err.name.should.equal('not_found');
+              return db.query('bar/byId').then(function (res) {
+                should.not.exist(res);
+              }).catch(function (err) {
+                err.name.should.equal('not_found');
+                return db.get('_design/foo').then(function (fooDoc) {
+                  return db.remove(fooDoc).then(function () {
+                    return db.viewCleanup();
+                  });
+                });
+              });
+            });
+          });
+        });
+      });
+    }
   });
 }

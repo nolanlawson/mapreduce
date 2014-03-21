@@ -14,7 +14,7 @@ module.exports = function (sourceDB, fullViewName, mapFun, reduceFun, cb) {
     // save the view name in the source PouchDB so it can be cleaned up if necessary
     // (e.g. when the _design doc is deleted, remove all associated view data)
     function diffFunction(doc) {
-      doc.views = doc.view || {};
+      doc.views = doc.views || {};
       doc.views[fullViewName] = doc.views[fullViewName] || {};
       doc.views[fullViewName][name] = true;
       return doc;

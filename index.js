@@ -888,24 +888,26 @@ exports.viewCleanup = function (origCallback) {
               callback(null, {ok : true});
             }
           }
+          var dbsToDelete = [];
           res.rows.forEach(function (row) {
             Object.keys(docsToViews[row.key]).forEach(function (viewName) {
               if (!row.doc || !row.doc[viewName]) {
                 // design doc deleted, or view function nonexistent
                 var viewDBNames = metaDoc.views[row.key.substring(8) + '/' + viewName];
-                Object.keys(viewDBNames).forEach(function (viewDBName) {
-                  numStarted++;
-
-                  taskQueue.addTask('destroy', [viewDBName, function (err) {
-                    if (err) {
-                      gotError = err;
-                    }
-                    numDone++;
-                    checkDone();
-                  }]);
-                });
+                dbsToDelete = dbsToDelete.concat(Object.keys(viewDBNames));
               }
             });
+          });
+          utils.uniq(dbsToDelete).forEach(function (viewDBName) {
+            numStarted++;
+
+            taskQueue.addTask('destroy', [viewDBName, function (err) {
+              if (err) {
+                gotError = err;
+              }
+              numDone++;
+              checkDone();
+            }]);
           });
           taskQueue.execute();
         });
@@ -990,7 +992,7 @@ exports.query = function (fun, opts, callback) {
         return;
       }
 
-      var fun = doc.views[viewName];
+      var fun = doc.views && doc.views[viewName];
 
       if (!fun) {
         opts.complete({ name: 'not_found', message: 'missing_named_view' });
