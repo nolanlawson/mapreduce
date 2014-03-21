@@ -14,18 +14,18 @@ module.exports = function (sourceDB, mapFun, reduceFun, cb) {
       if (err) {
         return cb(err);
       }
-      var index = new View(name, db, sourceDB, mapFun, reduceFun);
-      index.db.get('_local/lastSeq', function (err, lastSeqDoc) {
+      var view = new View(name, db, sourceDB, mapFun, reduceFun);
+      view.db.get('_local/lastSeq', function (err, lastSeqDoc) {
         if (err) {
           if (err.name !== 'not_found') {
             return cb(err);
           } else {
-            index.seq = 0;
+            view.seq = 0;
           }
         } else {
-          index.seq = lastSeqDoc.seq;
+          view.seq = lastSeqDoc.seq;
         }
-        cb(null, index);
+        cb(null, view);
       });
     });
   });
