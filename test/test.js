@@ -51,8 +51,9 @@ function tests(dbName, dbType, viewType) {
         }, function (err) {
           if (err) {
             reject(err);
+          } else {
+            resolve('theViewDoc/theView');
           }
-          resolve('theViewDoc/theView');
         });
       });
     };
@@ -72,21 +73,17 @@ function tests(dbName, dbType, viewType) {
   afterEach(function () {
     return new Pouch(dbName).then(function (db) {
       if (viewType === 'temp') {
-        return db.destroy();
+        return Pouch.destroy(dbName);
       }
       return db.get('_design/theViewDoc').then(function (designDoc) {
         return db.remove(designDoc).then(function () {
           return db.viewCleanup();
         }).then(function (res) {
           res.ok.should.equal(true);
-          console.log('destroying pouch ok');
-          return db.destroy();
+          return Pouch.destroy(dbName);
         });
       }).catch(function (err) {
-        console.log('couldnt delete theViewDoc');
-        console.log(err);
-        console.log('destroying pouch ok');
-        return db.destroy();
+        return Pouch.destroy(dbName);
       });
     });
   });

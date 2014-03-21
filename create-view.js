@@ -42,7 +42,6 @@ module.exports = function (sourceDB, fullViewName, mapFun, reduceFun, cb) {
           } else {
             view.seq = lastSeqDoc.seq;
           }
-          console.log('successfuly created index');
           cb(null, view);
         });
       });
