@@ -16,6 +16,9 @@ taskQueue.registerTask('updateView', updateViewInner);
 taskQueue.registerTask('queryView', queryViewInner);
 taskQueue.registerTask('localViewCleanup', localViewCleanupInner);
 
+var tempViewTaskQueue = new TaskQueue();
+tempViewTaskQueue.registerTask('tempView', tempViewInner);
+
 var processKey = function (key) {
   // Stringify keys since we want them as map keys (see #35)
   return JSON.stringify(normalizeKey(key));
@@ -713,6 +716,49 @@ function localViewCleanupInner(db, callback) {
   });
 }
 
+function tempView(db, fun, opts) {
+  tempViewTaskQueue.addTask(db, 'tempView', [db, fun, opts, opts.complete]);
+  tempViewTaskQueue.execute();
+}
+
+function tempViewInner(db, fun, opts, cb) {
+  var newOpts = utils.clone(opts);
+
+  newOpts.origMap = fun.map;
+  if (typeof fun.reduce === 'string') {
+    fun.reduce = builtInReduce[fun.reduce];
+  }
+  newOpts.origReduce = fun.reduce;
+
+  var ddocName = 'view' + Math.random();
+  var storableViewObj = {
+    map : fun.map.toString()
+  };
+  if (fun.reduce) {
+    storableViewObj.reduce = fun.reduce.toString();
+  }
+  var ddoc = {
+    _id: '_design/' + ddocName,
+    views: {
+      theView: storableViewObj
+    }
+  };
+  db.put(ddoc).then(function (ok) {
+    ddoc._rev = ok.rev;
+    db.query(ddocName + '/theView', newOpts).then(function (res) {
+      db.remove(ddoc).then(function () {
+        db.viewCleanup(function () {
+          cb(null, res);
+        });
+      });
+    }, function (reason) {
+      cb(reason);
+    });
+  });
+  return;
+}
+
+
 exports.viewCleanup = function (origCallback) {
   var db = this;
   var realCB;
@@ -801,41 +847,7 @@ exports.query = function (fun, opts, callback) {
     }
 
     if (typeof fun !== 'string') {
-      var newOpts = utils.clone(opts);
-      delete newOpts.complete;
-
-      newOpts.origMap = fun.map;
-      if (typeof fun.reduce === 'string') {
-        fun.reduce = builtInReduce[fun.reduce];
-      }
-      newOpts.origReduce = fun.reduce;
-
-      var ddocName = 'view' + Math.random();
-      var storableViewObj = {
-        map : fun.map.toString()
-      };
-      if (fun.reduce) {
-        storableViewObj.reduce = fun.reduce.toString();
-      }
-      var ddoc = {
-        _id: '_design/' + ddocName,
-        views: {
-          theView: storableViewObj
-        }
-      };
-      db.put(ddoc).then(function (ok) {
-        ddoc._rev = ok.rev;
-        db.query(ddocName + '/theView', newOpts).then(function (res) {
-          db.remove(ddoc).then(function () {
-            db.viewCleanup(function () {
-              opts.complete(null, res);
-            });
-          });
-        }, function (reason) {
-          opts.complete(reason);
-        });
-      });
-      return;
+      return tempView(db, fun, opts);
     }
 
     var fullViewName = fun;
