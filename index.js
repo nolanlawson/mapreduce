@@ -33,11 +33,6 @@ function tryCode(db, fun, args) {
   }
 }
 
-function sortByKeyThenValue(x, y) {
-  var keyCompare = collate(x.key, y.key);
-  return keyCompare !== 0 ? keyCompare : collate(x.value, y.value);
-}
-
 function sliceResults(results, limit, skip) {
   skip = skip || 0;
   if (typeof limit === 'number') {
@@ -223,59 +218,49 @@ function defaultsTo(value) {
     throw reason;
   };
 }
-function saveKeyValues(view, docIdsToEmits, seq) {
+function saveKeyValues(view, indexableKeysToKeyValues, docId, seq) {
   return view.db.get('_local/lastSeq')
     .then(null, defaultsTo({_id: '_local/lastSeq', seq: 0}))
     .then(function (lastSeqDoc) {
-      return Promise.all(Object.keys(docIdsToEmits).map(function (docId) {
-        return view.db.get('_local/doc_' + docId)
-          .then(null, defaultsTo({_id : '_local/doc_' + docId, keys : []}))
-          .then(function (metaDoc) {
-            return view.db.allDocs({keys : metaDoc.keys, include_docs : true}).then(function (res) {
-              var kvDocs = res.rows.map(function (row) {
-                return row.doc;
-              }).filter(function (row) {
-                return row;
-              });
-
-              var indexableKeysToKeyValues = docIdsToEmits[docId];
-              var oldKeysMap = {};
-              kvDocs.forEach(function (kvDoc) {
-                oldKeysMap[kvDoc._id] = true;
-                kvDoc._deleted = !indexableKeysToKeyValues[kvDoc._id];
-                if (!kvDoc._deleted) {
-                  kvDoc.value = indexableKeysToKeyValues[kvDoc._id];
-                }
-              });
-
-              var newKeys = Object.keys(indexableKeysToKeyValues);
-              newKeys.forEach(function (key) {
-                if (!oldKeysMap[key]) {
-                  // new doc
-                  kvDocs.push({
-                    _id : key,
-                    value : indexableKeysToKeyValues[key]
-                  });
-                }
-              });
-              metaDoc.keys = utils.uniq(newKeys.concat(metaDoc.keys));
-              kvDocs.push(metaDoc);
-
-              return kvDocs;
-            });
-          });
-      })).then(function (listOfDocsToPersist) {
-        var docsToPersist = [];
-        listOfDocsToPersist.forEach(function (docList) {
-          docsToPersist = docsToPersist.concat(docList);
+    return view.db.get('_local/doc_' + docId)
+    .then(null, defaultsTo({_id : '_local/doc_' + docId, keys : []}))
+    .then(function (metaDoc) {
+      return view.db.allDocs({keys : metaDoc.keys, include_docs : true}).then(function (res) {
+        var kvDocs = res.rows.map(function (row) {
+          return row.doc;
+        }).filter(function (row) {
+          return row;
         });
 
-        lastSeqDoc.seq = seq;
-        docsToPersist.push(lastSeqDoc);
+        var oldKeysMap = {};
+        kvDocs.forEach(function (kvDoc) {
+          oldKeysMap[kvDoc._id] = true;
+          kvDoc._deleted = !indexableKeysToKeyValues[kvDoc._id];
+          if (!kvDoc._deleted) {
+            kvDoc.value = indexableKeysToKeyValues[kvDoc._id];
+          }
+        });
 
-        return view.db.bulkDocs({docs : docsToPersist});
+        var newKeys = Object.keys(indexableKeysToKeyValues);
+        newKeys.forEach(function (key) {
+          if (!oldKeysMap[key]) {
+            // new doc
+            kvDocs.push({
+              _id : key,
+              value : indexableKeysToKeyValues[key]
+            });
+          }
+        });
+        metaDoc.keys = utils.uniq(newKeys.concat(metaDoc.keys));
+        kvDocs.push(metaDoc);
+
+        lastSeqDoc.seq = seq;
+        kvDocs.push(lastSeqDoc);
+
+        return view.db.bulkDocs({docs : kvDocs});
       });
     });
+  });
 }
 
 var updateView = utils.sequentialize(mainQueue, function (view) {
@@ -304,9 +289,26 @@ var updateView = utils.sequentialize(mainQueue, function (view) {
 
   var currentSeq = view.seq || 0;
 
-  function processChange(docIdsToEmits, seq) {
+  function processChange(currentDoc, seq) {
     return function () {
-      return saveKeyValues(view, docIdsToEmits, seq);
+      mapResults = [];
+      doc = currentDoc;
+
+      if (!doc._deleted) {
+        tryCode(view.sourceDB, mapFun, [doc]);
+      }
+      mapResults.sort(function (x, y) {
+        var keyCompare = collate(x.key, y.key);
+        return keyCompare !== 0 ? keyCompare : collate(x.value, y.value);
+      });
+      var indexableKeysToKeyValues = {};
+      mapResults.forEach(function (o, pos) {
+        indexableKeysToKeyValues[toIndexableString([o.key, o.id, pos])] = o;
+      });
+      return saveKeyValues(view, indexableKeysToKeyValues, doc._id, seq)
+      .then(function () {
+        currentSeq = Math.max(currentSeq, seq);
+      });
     };
   }
   var queue = new TaskQueue();
@@ -332,32 +334,15 @@ var updateView = utils.sequentialize(mainQueue, function (view) {
         if (!results.length) {
           return complete();
         }
-        var docIdsToEmits = {};
         for (var i = 0, l = results.length; i < l; i++) {
           var change = results[i];
           if (change.doc._id[0] !== '_') {
-            mapResults = [];
-            doc = change.doc;
-
-            if (!doc._deleted) {
-              tryCode(view.sourceDB, mapFun, [doc]);
-            }
-            mapResults.sort(sortByKeyThenValue);
-
-            var indexableKeysToKeyValues = {};
-            for (var j = 0, jl = mapResults.length; j < jl; j++) {
-              var obj = mapResults[j];
-              var indexableKey = toIndexableString([obj.key, obj.id, j]);
-              indexableKeysToKeyValues[indexableKey] = obj;
-            }
-            docIdsToEmits[change.doc._id] = indexableKeysToKeyValues;
+            queue.add(processChange(change.doc, change.seq));
           }
         }
-        queue.add(processChange(docIdsToEmits, response.last_seq));
         if (results.length < CHANGES_BATCH_SIZE) {
           return complete();
         }
-        currentSeq = response.last_seq;
         processNextBatch();
       }).on('error', function (err) {
         reject(err);
